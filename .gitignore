@@ -4,3 +4,5 @@ __pycache__/
 .pytest_cache/
 checkpoints/
 logs/
+
+src/tests/
