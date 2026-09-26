@@ -24,6 +24,7 @@ class SCBEnvironment:
 
     VALIDITY_MODE = "validity"
     MINIMIZATION_MODE = "minimization"
+    GLOBAL_EXPLORATION_MODE = "global_exploration"
 
     def __init__(
         self,
@@ -35,6 +36,8 @@ class SCBEnvironment:
 
         self.candidate: Optional[Candidate] = None
         self.state: Optional[SCBState] = None
+
+        self.global_best_scb: Optional[float] = None
 
     # ------------------------------------------------------------------
     # RESET
@@ -65,6 +68,11 @@ class SCBEnvironment:
         )
 
         self.state = self._evaluate_candidate(self.candidate)
+
+        if self.state.valid and self.state.scb is not None:
+            self.global_best_scb = self.state.scb
+        else:
+            self.global_best_scb = None
 
         return self.state.copy()
 
@@ -259,6 +267,25 @@ class SCBEnvironment:
         raise ValueError(
             f"Unknown environment mode: {self.mode}"
         )
+        # --------------------------------------------------------------
+        # GLOBAL_EXPLORATION
+        # --------------------------------------------------------------
+
+
+        if self.mode == self.GLOBAL_EXPLORATION_MODE:
+            if not new_state.valid or new_state.scb is None:
+                return 0.0
+
+            if self.global_best_scb is None:
+                self.global_best_scb = new_state.scb
+                return 0.0
+
+            if new_state.scb < self.global_best_scb:
+                reward = self.global_best_scb - new_state.scb
+                self.global_best_scb = new_state.scb
+                return reward
+
+            return 0.0
 
     # ------------------------------------------------------------------
     # MODE
@@ -270,9 +297,8 @@ class SCBEnvironment:
         if mode not in (
             self.VALIDITY_MODE,
             self.MINIMIZATION_MODE,
+            self.GLOBAL_EXPLORATION_MODE,
         ):
-            raise ValueError(
-                f"Unknown mode: {mode}"
-            )
+            raise ValueError(f"Unknown environment mode: {mode}")
 
         self.mode = mode
