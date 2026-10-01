@@ -1,0 +1,5688 @@
+===== PROJECT TREE =====
+src/__init__.py
+src/controller/__init__.py
+src/controller/controller.py
+src/controller/curriculum.py
+src/controller/episode_manager.py
+src/controller/policy_orchestrator.py
+src/data/__init__.py
+src/data/graph_loader.py
+src/data/graph_schema.py
+src/environment/__init__.py
+src/environment/actions.py
+src/environment/candidate.py
+src/environment/environment.py
+src/environment/state.py
+src/models/__init__.py
+src/models/action_scorer.py
+src/models/policies.py
+src/models/scb_encoder.py
+src/models/value_head.py
+src/scb/__init__.py
+src/scb/connectivity.py
+src/scb/evaluator.py
+src/scb/problem.py
+src/scb/scb.py
+src/training/advantages.py
+src/training/ppo_loss.py
+src/training/ppo_updater.py
+src/training/rollout_buffer.py
+src/training/training_stats.py
+tests/conftest.py
+tests/test_act.py
+tests/test_action_masks.py
+tests/test_actsco.py
+tests/test_advantages.py
+tests/test_can.py
+tests/test_control.py
+tests/test_controller_episode_transition.py
+tests/test_curriculum.py
+tests/test_dummy_scb_episode.py
+tests/test_encoder.py
+tests/test_env.py
+tests/test_episode_manager.py
+tests/test_full_ppo_episode.py
+tests/test_math_and_data.py
+tests/test_policies.py
+tests/test_policy_orchestrator.py
+tests/test_ppo_loss.py
+tests/test_rollout_buffer.py
+tests/test_training_stats.py
+tests/test_validity_learning.py
+tests/test_value_head.py
+
+===== src/controller/controller.py =====
+from enum import Enum
+from typing import Optional
+
+from src.environment.state import SCBState
+
+
+class ControllerPhase(Enum):
+    VALIDITY = "validity"
+    MINIMIZATION = "minimization"
+    LOCAL_RETRY = "local_retry"
+    GLOBAL_EXPLORATION = "global_exploration"
+    DONE = "done"
+
+
+class SCBController:
+    """
+    Deterministic controller for the joint SCB RL system.
+
+    The controller decides which policy should currently be active.
+
+    It does NOT:
+        - select actions
+        - run a neural network
+        - calculate PPO losses
+        - use GA results
+        - modify rewards
+
+    Responsibilities:
+        - Manage policy phases
+        - Track SCB improvements
+        - Detect minimization stalls
+        - Manage local retries
+        - Trigger global exploration
+    """
+
+    N_STALL = 20
+    LOCAL_PROMISING_THRESHOLD = 0.10
+    MAX_LOCAL_RETRIES = 2
+
+    def __init__(self):
+        self.phase = ControllerPhase.VALIDITY
+
+        self.stall_count = 0
+        self.local_retry_count = 0
+
+        self.best_scb: Optional[float] = None
+        self.global_best_scb: Optional[float] = None
+
+        self.previous_state: Optional[SCBState] = None
+        self.local_retry_start_scb: Optional[float] = None
+
+    def reset(self):
+        """Reset controller for a new episode."""
+
+        self.phase = ControllerPhase.VALIDITY
+
+        self.stall_count = 0
+        self.local_retry_count = 0
+
+        self.best_scb = None
+        self.global_best_scb = None
+
+        self.previous_state = None
+        self.local_retry_start_scb = None
+
+    def start(self, state: SCBState):
+        """Start controller using the initial environment state."""
+
+        self.reset()
+
+        self.previous_state = state.copy()
+
+        if state.valid and state.scb is not None:
+            self.phase = ControllerPhase.MINIMIZATION
+            self.best_scb = state.scb
+            self.global_best_scb = state.scb
+        else:
+            self.phase = ControllerPhase.VALIDITY
+
+    def current_policy(self) -> ControllerPhase:
+        """Return the policy currently controlling the agent."""
+
+        return self.phase
+
+    def update(self, new_state: SCBState) -> ControllerPhase:
+        """
+        Update controller after an environment transition.
+
+        Returns:
+            Policy/phase that should control the next action.
+        """
+
+        if self.previous_state is None:
+            raise RuntimeError(
+                "Controller must be started before calling update()."
+            )
+
+        # ---------------------------------------------------------
+        # VALIDITY
+        # ---------------------------------------------------------
+
+        if self.phase == ControllerPhase.VALIDITY:
+
+            if new_state.valid:
+
+                if new_state.scb is not None:
+                    self.best_scb = new_state.scb
+
+                    if (
+                        self.global_best_scb is None
+                        or new_state.scb < self.global_best_scb
+                    ):
+                        self.global_best_scb = new_state.scb
+
+                self.stall_count = 0
+                self.local_retry_count = 0
+
+                self.phase = ControllerPhase.MINIMIZATION
+
+            self.previous_state = new_state.copy()
+            return self.phase
+
+        # ---------------------------------------------------------
+        # MINIMIZATION
+        # ---------------------------------------------------------
+
+        if self.phase == ControllerPhase.MINIMIZATION:
+
+            if not new_state.valid or new_state.scb is None:
+                self.phase = ControllerPhase.VALIDITY
+                self.stall_count = 0
+
+                self.previous_state = new_state.copy()
+                return self.phase
+
+            improved = (
+                self.best_scb is None
+                or new_state.scb < self.best_scb
+            )
+
+            if improved:
+
+                self.best_scb = new_state.scb
+                self.stall_count = 0
+
+                if (
+                    self.global_best_scb is None
+                    or new_state.scb < self.global_best_scb
+                ):
+                    self.global_best_scb = new_state.scb
+
+            else:
+                self.stall_count += 1
+
+            if self.stall_count >= self.N_STALL:
+                self.stall_count = 0
+                self.local_retry_start_scb = self.best_scb
+                self.phase = ControllerPhase.LOCAL_RETRY
+
+            self.previous_state = new_state.copy()
+            return self.phase
+
+        # ---------------------------------------------------------
+        # LOCAL RETRY
+        # ---------------------------------------------------------
+
+        if self.phase == ControllerPhase.LOCAL_RETRY:
+
+            if not new_state.valid or new_state.scb is None:
+                self.phase = ControllerPhase.VALIDITY
+                self.stall_count = 0
+
+                self.previous_state = new_state.copy()
+                return self.phase
+
+            # Improvement relative to the state that existed when
+            # local retry began.
+            if (
+                self.local_retry_start_scb is not None
+                and new_state.scb < self.local_retry_start_scb
+            ):
+                improvement = (
+                    self.local_retry_start_scb - new_state.scb
+                )
+
+                self.best_scb = new_state.scb
+                self.global_best_scb = min(
+                    self.global_best_scb
+                    if self.global_best_scb is not None
+                    else new_state.scb,
+                    new_state.scb,
+                )
+
+                self.stall_count = 0
+                self.local_retry_count = 0
+                self.local_retry_start_scb = None
+
+                # A sufficiently promising local improvement sends
+                # us back into ordinary minimization.
+                if improvement >= self.LOCAL_PROMISING_THRESHOLD:
+                    self.phase = ControllerPhase.MINIMIZATION
+                else:
+                    # Small improvement still counts as progress,
+                    # but does not meet the promising threshold.
+                    self.local_retry_count += 1
+
+                    if self.local_retry_count >= self.MAX_LOCAL_RETRIES:
+                        self.local_retry_count = 0
+                        self.local_retry_start_scb = None
+                        self.phase = ControllerPhase.GLOBAL_EXPLORATION
+                    else:
+                        self.local_retry_start_scb = new_state.scb
+
+            else:
+                # No meaningful improvement during this retry.
+                self.local_retry_count += 1
+                self.stall_count = 0
+
+                if self.local_retry_count >= self.MAX_LOCAL_RETRIES:
+                    self.local_retry_count = 0
+                    self.local_retry_start_scb = None
+                    self.phase = ControllerPhase.GLOBAL_EXPLORATION
+
+            self.previous_state = new_state.copy()
+            return self.phase
+
+        # ---------------------------------------------------------
+        # GLOBAL EXPLORATION
+        # ---------------------------------------------------------
+
+        if self.phase == ControllerPhase.GLOBAL_EXPLORATION:
+
+            if not new_state.valid or new_state.scb is None:
+                self.phase = ControllerPhase.VALIDITY
+                self.stall_count = 0
+
+                self.previous_state = new_state.copy()
+                return self.phase
+
+            if (
+                self.global_best_scb is None
+                or new_state.scb < self.global_best_scb
+            ):
+                self.global_best_scb = new_state.scb
+                self.best_scb = new_state.scb
+
+                self.stall_count = 0
+                self.local_retry_count = 0
+
+                self.phase = ControllerPhase.MINIMIZATION
+
+            else:
+                self.stall_count += 1
+
+            self.previous_state = new_state.copy()
+            return self.phase
+
+        # ---------------------------------------------------------
+        # DONE
+        # ---------------------------------------------------------
+
+        if self.phase == ControllerPhase.DONE:
+            self.previous_state = new_state.copy()
+            return self.phase
+
+        raise RuntimeError(
+            f"Unknown controller phase: {self.phase}"
+        )
+
+    def should_stop(self) -> bool:
+        """Return whether the controller is in a terminal phase."""
+
+        return self.phase == ControllerPhase.DONE
+===== src/controller/episode_manager.py =====
+from dataclasses import dataclass
+from typing import Optional
+
+from src.controller.controller import (
+    SCBController,
+    ControllerPhase,
+)
+from src.controller.policy_orchestrator import (
+    PolicyOrchestrator,
+    OrchestratorOutput,
+)
+from src.environment.environment import SCBEnvironment
+from src.environment.state import SCBState
+from src.models.scb_encoder import SCBEncoder
+from src.scb.problem import SCBProblem
+
+
+@dataclass
+class EpisodeStep:
+    step_number: int
+    phase: ControllerPhase
+    policy_name: str
+    action: object
+    reward: float
+    state: SCBState
+    done: bool
+
+
+@dataclass
+class EpisodeResult:
+    steps: list[EpisodeStep]
+    initial_state: SCBState
+    final_state: SCBState
+    total_reward: float
+    best_scb: Optional[float]
+    final_phase: ControllerPhase
+
+
+class SCBEpisodeManager:
+    """
+    Runs one complete SCB RL episode.
+
+    Responsibilities:
+        - Reset environment/controller.
+        - Encode the current state.
+        - Ask the orchestrator for an action.
+        - Apply the action through the environment.
+        - Update the controller.
+        - Track episode statistics.
+        - Optionally print human-readable debugging information.
+
+    Does NOT:
+        - Calculate rewards.
+        - Select actions.
+        - Calculate PPO losses.
+        - Use GA information.
+    """
+
+    def __init__(
+        self,
+        environment: SCBEnvironment,
+        controller: SCBController,
+        encoder: SCBEncoder,
+        orchestrator: PolicyOrchestrator,
+        max_steps: int = 100,
+    ):
+        if max_steps <= 0:
+            raise ValueError("max_steps must be positive.")
+
+        self.environment = environment
+        self.controller = controller
+        self.encoder = encoder
+        self.orchestrator = orchestrator
+        self.max_steps = max_steps
+
+    # ------------------------------------------------------------------
+    # Environment mode
+    # ------------------------------------------------------------------
+
+    def _set_environment_mode(
+        self,
+        phase: ControllerPhase,
+    ):
+        if phase == ControllerPhase.VALIDITY:
+            self.environment.set_mode(
+                SCBEnvironment.VALIDITY_MODE
+            )
+
+        elif phase in (
+            ControllerPhase.MINIMIZATION,
+            ControllerPhase.LOCAL_RETRY,
+        ):
+            self.environment.set_mode(
+                SCBEnvironment.MINIMIZATION_MODE
+            )
+
+        elif phase == ControllerPhase.GLOBAL_EXPLORATION:
+            self.environment.set_mode(
+                SCBEnvironment.GLOBAL_EXPLORATION_MODE
+            )
+
+        elif phase == ControllerPhase.DONE:
+            return
+
+        else:
+            raise ValueError(
+                f"Unsupported controller phase: {phase}"
+            )
+
+    # ------------------------------------------------------------------
+    # Debug printing
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _format_action(action) -> str:
+        action_type = action.action_type.name
+
+        if action.target is None:
+            return action_type
+
+        return f"{action_type} {action.target}"
+
+    @staticmethod
+    def _print_initial_state(
+        state: SCBState,
+        phase: ControllerPhase,
+    ):
+        print()
+        print("=" * 60)
+        print("EPISODE START")
+        print("=" * 60)
+
+        print("Initial State")
+        print(f"  Valid             : {state.valid}")
+        print(f"  SCB               : {state.scb}")
+        print(
+            f"  Sessions selected : "
+            f"{state.selected_session_count}"
+        )
+        print(f"  Cut edges         : {state.cut_size}")
+        print(
+            f"  Separated         : "
+            f"{state.separated_sessions}"
+        )
+        print(f"  Phase             : {phase.value}")
+
+        print("=" * 60)
+
+    @staticmethod
+    def _print_step(
+        step_number: int,
+        phase: ControllerPhase,
+        policy_name: str,
+        orchestrator_output: OrchestratorOutput,
+        reward: float,
+        state: SCBState,
+        done: bool,
+    ):
+        print()
+        print(f"Step {step_number:03d}")
+
+        print(f"  Phase             : {phase.value}")
+        print(f"  Policy            : {policy_name}")
+        print(
+            f"  Action            : "
+            f"{SCBEpisodeManager._format_action(orchestrator_output.action)}"
+        )
+        print(f"  Reward            : {reward:+.6f}")
+        print(f"  Valid             : {state.valid}")
+        print(f"  SCB               : {state.scb}")
+        print(f"  Cut size          : {state.cut_size}")
+        print(
+            f"  Separated         : "
+            f"{state.separated_sessions}"
+        )
+        print(f"  Done              : {done}")
+
+    @staticmethod
+    def _print_phase_transition(
+        old_phase: ControllerPhase,
+        new_phase: ControllerPhase,
+    ):
+        if old_phase != new_phase:
+            print()
+            print(
+                f"[CONTROLLER] "
+                f"{old_phase.value.upper()} "
+                f"→ "
+                f"{new_phase.value.upper()}"
+            )
+
+    @staticmethod
+    def _print_episode_summary(
+        result: EpisodeResult,
+    ):
+        print()
+        print("=" * 60)
+        print("EPISODE COMPLETE")
+        print("=" * 60)
+
+        print(f"  Steps             : {len(result.steps)}")
+        print(
+            f"  Final phase       : "
+            f"{result.final_phase.value}"
+        )
+        print(f"  Final valid       : {result.final_state.valid}")
+        print(f"  Final SCB         : {result.final_state.scb}")
+        print(f"  Best SCB          : {result.best_scb}")
+        print(f"  Total reward      : {result.total_reward:.6f}")
+
+        print("=" * 60)
+
+    # ------------------------------------------------------------------
+    # Episode execution
+    # ------------------------------------------------------------------
+
+    def run(
+        self,
+        selected_sessions=None,
+        verbose: bool = True,
+        deterministic: bool = False,
+    ) -> EpisodeResult:
+
+        # --------------------------------------------------------------
+        # Reset
+        # --------------------------------------------------------------
+
+        initial_state = self.environment.reset(
+            selected_sessions=selected_sessions
+        )
+
+        self.controller.start(initial_state)
+
+        current_state = initial_state.copy()
+
+        phase = self.controller.current_policy()
+
+        if verbose:
+            self._print_initial_state(
+                current_state,
+                phase,
+            )
+
+        steps: list[EpisodeStep] = []
+
+        total_reward = 0.0
+
+        best_scb = (
+            current_state.scb
+            if current_state.valid
+            else None
+        )
+
+        # --------------------------------------------------------------
+        # Main loop
+        # --------------------------------------------------------------
+
+        for step_number in range(1, self.max_steps + 1):
+
+            phase = self.controller.current_policy()
+
+            if phase == ControllerPhase.DONE:
+                break
+
+            # ----------------------------------------------------------
+            # Set reward mode according to controller phase
+            # ----------------------------------------------------------
+
+            self._set_environment_mode(phase)
+
+            # ----------------------------------------------------------
+            # Encode current state
+            # ----------------------------------------------------------
+
+            encoder_output = self.encoder(
+                self.environment.problem,
+                current_state,
+            )
+
+            # ----------------------------------------------------------
+            # Policy chooses action
+            # ----------------------------------------------------------
+
+            orchestrator_output = self.orchestrator.act(
+                phase=phase,
+                encoder_output=encoder_output,
+                problem=self.environment.problem,
+                state=current_state,
+                deterministic=deterministic,
+            )
+
+            # ----------------------------------------------------------
+            # Environment applies action
+            # ----------------------------------------------------------
+
+            new_state, reward, done, _info = self.environment.step(
+                orchestrator_output.action
+            )
+
+            total_reward += reward
+
+            # ----------------------------------------------------------
+            # Track best SCB
+            # ----------------------------------------------------------
+
+            if (
+                new_state.valid
+                and new_state.scb is not None
+                and (
+                    best_scb is None
+                    or new_state.scb < best_scb
+                )
+            ):
+                best_scb = new_state.scb
+
+            # ----------------------------------------------------------
+            # Controller update
+            # ----------------------------------------------------------
+
+            old_phase = phase
+
+            if not done:
+                new_phase = self.controller.update(
+                    new_state
+                )
+            else:
+                new_phase = self.controller.current_policy()
+
+            # ----------------------------------------------------------
+            # Record step
+            # ----------------------------------------------------------
+
+            episode_step = EpisodeStep(
+                step_number=step_number,
+                phase=old_phase,
+                policy_name=type(
+                    orchestrator_output.policy
+                ).__name__,
+                action=orchestrator_output.action,
+                reward=reward,
+                state=new_state.copy(),
+                done=done,
+            )
+
+            steps.append(episode_step)
+
+            # ----------------------------------------------------------
+            # Debug output
+            # ----------------------------------------------------------
+
+            if verbose:
+                self._print_step(
+                    step_number=step_number,
+                    phase=old_phase,
+                    policy_name=episode_step.policy_name,
+                    orchestrator_output=orchestrator_output,
+                    reward=reward,
+                    state=new_state,
+                    done=done,
+                )
+
+                self._print_phase_transition(
+                    old_phase,
+                    new_phase,
+                )
+
+            # ----------------------------------------------------------
+            # Advance
+            # ----------------------------------------------------------
+
+            current_state = new_state.copy()
+
+            if done:
+                break
+
+        # --------------------------------------------------------------
+        # Build result
+        # --------------------------------------------------------------
+
+        result = EpisodeResult(
+            steps=steps,
+            initial_state=initial_state,
+            final_state=current_state,
+            total_reward=total_reward,
+            best_scb=best_scb,
+            final_phase=self.controller.current_policy(),
+        )
+
+        if verbose:
+            self._print_episode_summary(result)
+
+        return result
+===== src/controller/policy_orchestrator.py =====
+from dataclasses import dataclass
+
+from src.controller.controller import ControllerPhase
+from src.models.policies import (
+    BaseSCBPolicy,
+    ValidityPolicy,
+    MinimizationPolicy,
+    GlobalExplorationPolicy,
+    PolicyOutput,
+)
+from src.environment.actions import Action
+from src.environment.environment import SCBEnvironment
+from src.environment.state import SCBState
+from src.models.scb_encoder import SCBEncoderOutput
+from src.scb.problem import SCBProblem
+
+
+@dataclass
+class OrchestratorOutput:
+    """
+    Output of the controller-policy orchestration step.
+    """
+
+    phase: ControllerPhase
+    policy: BaseSCBPolicy
+    policy_output: PolicyOutput
+
+    @property
+    def action(self) -> Action:
+        return self.policy_output.action
+
+    @property
+    def action_index(self) -> int:
+        return self.policy_output.action_index
+
+    @property
+    def log_prob(self):
+        return self.policy_output.log_prob
+
+    @property
+    def entropy(self):
+        return self.policy_output.entropy
+
+
+class PolicyOrchestrator:
+    """
+    Connects the controller's current phase to the appropriate policy.
+
+    Responsibilities:
+        - Select the policy associated with the controller phase.
+        - Execute that policy.
+        - Return the policy output together with the active phase.
+
+    Does NOT:
+        - Choose actions itself.
+        - Modify the environment.
+        - Calculate rewards.
+        - Calculate PPO losses.
+        - Use GA information.
+        - Modify controller state.
+    """
+
+    def __init__(
+        self,
+        validity_policy: ValidityPolicy,
+        minimization_policy: MinimizationPolicy,
+        global_exploration_policy: GlobalExplorationPolicy,
+    ):
+        self.validity_policy = validity_policy
+        self.minimization_policy = minimization_policy
+        self.global_exploration_policy = global_exploration_policy
+
+    def get_policy(
+        self,
+        phase: ControllerPhase,
+    ) -> BaseSCBPolicy:
+        """
+        Return the policy associated with a controller phase.
+        """
+
+        if phase == ControllerPhase.VALIDITY:
+            return self.validity_policy
+
+        if phase == ControllerPhase.MINIMIZATION:
+            return self.minimization_policy
+
+        if phase == ControllerPhase.LOCAL_RETRY:
+            # Local retry deliberately reuses minimization.
+            return self.minimization_policy
+
+        if phase == ControllerPhase.GLOBAL_EXPLORATION:
+            return self.global_exploration_policy
+
+        if phase == ControllerPhase.DONE:
+            raise RuntimeError(
+                "Cannot select a policy when controller phase is DONE."
+            )
+
+        raise ValueError(
+            f"Unsupported controller phase: {phase}"
+        )
+
+    def act(
+        self,
+        phase: ControllerPhase,
+        encoder_output: SCBEncoderOutput,
+        problem: SCBProblem,
+        state: SCBState,
+        deterministic: bool = False,
+    ) -> OrchestratorOutput:
+        """
+        Execute the policy associated with the supplied controller phase.
+        """
+
+        policy = self.get_policy(phase)
+
+        policy_output = policy(
+            encoder_output,
+            problem,
+            state,
+            deterministic=deterministic,
+        )
+
+        return OrchestratorOutput(
+            phase=phase,
+            policy=policy,
+            policy_output=policy_output,
+        )
+===== src/environment/environment.py =====
+from typing import Optional
+
+from src.environment.candidate import Candidate
+from src.environment.actions import Action, ActionType
+from src.environment.state import SCBState
+
+from src.scb.problem import SCBProblem
+from src.scb.evaluator import evaluate_candidate
+
+
+class SCBEnvironment:
+    """
+    Deterministic environment for joint SCB search.
+
+    Handles:
+        - Current candidate (I', E')
+        - Candidate evaluation
+        - Validity
+        - SCB
+        - Rewards
+
+    Controller logic is intentionally not included yet.
+    """
+
+    VALIDITY_MODE = "validity"
+    MINIMIZATION_MODE = "minimization"
+    GLOBAL_EXPLORATION_MODE = "global_exploration"
+
+    def __init__(
+        self,
+        problem: SCBProblem,
+        mode: str = VALIDITY_MODE,
+    ):
+        self.problem = problem
+        self.mode = mode
+
+        self.candidate: Optional[Candidate] = None
+        self.state: Optional[SCBState] = None
+
+        self.global_best_scb: Optional[float] = None
+
+    # ------------------------------------------------------------------
+    # RESET
+    # ------------------------------------------------------------------
+
+    def reset(self, selected_sessions=None) -> SCBState:
+        """
+        Start a new search.
+
+        Default:
+            I' = all sessions
+            E' = empty
+        """
+
+        if selected_sessions is None:
+            selected_sessions = set(self.problem.sessions)
+
+        selected_sessions = set(selected_sessions)
+
+        if not selected_sessions:
+            raise ValueError(
+                "Initial candidate must contain at least one selected session."
+            )
+
+        self.candidate = Candidate(
+            selected_sessions=selected_sessions,
+            cut_edges=set(),
+        )
+
+        self.state = self._evaluate_candidate(self.candidate)
+
+        if self.state.valid and self.state.scb is not None:
+            self.global_best_scb = self.state.scb
+        else:
+            self.global_best_scb = None
+
+        return self.state.copy()
+
+    # ------------------------------------------------------------------
+    # STEP
+    # ------------------------------------------------------------------
+
+    def step(self, action: Action):
+        """
+        Apply one action and return:
+
+            next_state
+            reward
+            done
+            info
+        """
+
+        if self.candidate is None or self.state is None:
+            raise RuntimeError(
+                "Environment must be reset before calling step()."
+            )
+
+        old_state = self.state.copy()
+
+        # STOP ends the current episode.
+        if action.action_type == ActionType.STOP:
+            return (
+                self.state.copy(),
+                0.0,
+                True,
+                {"action": "STOP"},
+            )
+
+        new_candidate = self.candidate.copy()
+
+        self._apply_action(new_candidate, action)
+
+        new_state = self._evaluate_candidate(new_candidate)
+
+        reward = self._calculate_reward(
+            old_state,
+            new_state,
+        )
+
+        self.candidate = new_candidate
+        self.state = new_state
+
+        return (
+            new_state.copy(),
+            reward,
+            False,
+            {
+                "action": action.action_type.name,
+            },
+        )
+
+    # ------------------------------------------------------------------
+    # ACTION APPLICATION
+    # ------------------------------------------------------------------
+
+    def _apply_action(
+        self,
+        candidate: Candidate,
+        action: Action,
+    ):
+        """Apply an action to a candidate."""
+
+        action_type = action.action_type
+        target = action.target
+
+        if action_type == ActionType.ADD_EDGE:
+
+            if target is None:
+                raise ValueError(
+                    "ADD_EDGE requires an edge target."
+                )
+
+            candidate.add_edge(target)
+
+        elif action_type == ActionType.REMOVE_EDGE:
+
+            if target is None:
+                raise ValueError(
+                    "REMOVE_EDGE requires an edge target."
+                )
+
+            candidate.remove_edge(target)
+
+        elif action_type == ActionType.ADD_SESSION:
+
+            if target is None:
+                raise ValueError(
+                    "ADD_SESSION requires a session target."
+                )
+
+            candidate.add_session(target)
+
+        elif action_type == ActionType.REMOVE_SESSION:
+
+            if target is None:
+                raise ValueError(
+                    "REMOVE_SESSION requires a session target."
+                )
+
+            candidate.remove_session(target)
+
+        else:
+            raise ValueError(
+                f"Unsupported action type: {action_type}"
+            )
+
+    # ------------------------------------------------------------------
+    # EVALUATION
+    # ------------------------------------------------------------------
+
+    def _evaluate_candidate(
+        self,
+        candidate: Candidate,
+    ) -> SCBState:
+        """Evaluate a candidate using the SCB mathematical evaluator."""
+
+        result = evaluate_candidate(
+            self.problem,
+            selected_sessions=candidate.selected_sessions,
+            cut_edges=candidate.cut_edges,
+        )
+
+        return SCBState(
+            candidate=candidate.copy(),
+            valid=result.valid,
+            scb=result.scb,
+            cut_size=result.cut_size,
+            selected_session_count=result.selected_session_count,
+            separated_sessions=result.separated_sessions,
+        )
+
+    # ------------------------------------------------------------------
+    # REWARD
+    # ------------------------------------------------------------------
+
+    def _calculate_reward(
+        self,
+        old_state: SCBState,
+        new_state: SCBState,
+    ) -> float:
+        """
+        Calculate reward.
+
+        Validity mode:
+
+            INVALID -> VALID = +1
+            otherwise = 0
+
+        Minimization mode:
+
+            valid -> valid:
+                reward = old_scb - new_scb
+
+            otherwise:
+                reward = 0
+        """
+
+        # --------------------------------------------------------------
+        # VALIDITY
+        # --------------------------------------------------------------
+
+        if self.mode == self.VALIDITY_MODE:
+
+            if not old_state.valid and new_state.valid:
+                return 1.0
+
+            return 0.0
+
+        # --------------------------------------------------------------
+        # MINIMIZATION
+        # --------------------------------------------------------------
+
+        if self.mode == self.MINIMIZATION_MODE:
+
+            if old_state.valid and new_state.valid:
+
+                if old_state.scb is None:
+                    return 0.0
+
+                if new_state.scb is None:
+                    return 0.0
+
+                return old_state.scb - new_state.scb
+
+            return 0.0
+
+        raise ValueError(
+            f"Unknown environment mode: {self.mode}"
+        )
+        # --------------------------------------------------------------
+        # GLOBAL_EXPLORATION
+        # --------------------------------------------------------------
+
+
+        if self.mode == self.GLOBAL_EXPLORATION_MODE:
+            if not new_state.valid or new_state.scb is None:
+                return 0.0
+
+            if self.global_best_scb is None:
+                self.global_best_scb = new_state.scb
+                return 0.0
+
+            if new_state.scb < self.global_best_scb:
+                reward = self.global_best_scb - new_state.scb
+                self.global_best_scb = new_state.scb
+                return reward
+
+            return 0.0
+
+    # ------------------------------------------------------------------
+    # MODE
+    # ------------------------------------------------------------------
+
+    def set_mode(self, mode: str):
+        """Change the reward mode."""
+
+        if mode not in (
+            self.VALIDITY_MODE,
+            self.MINIMIZATION_MODE,
+            self.GLOBAL_EXPLORATION_MODE,
+        ):
+            raise ValueError(f"Unknown environment mode: {mode}")
+
+        self.mode = mode
+===== src/environment/actions.py =====
+"""Action definitions for the three SCB search policies."""
+
+from dataclasses import dataclass
+from enum import Enum
+from typing import Any
+
+
+class ActionType(str, Enum):
+    """Primitive modifications available to the joint search."""
+
+    ADD_EDGE = "add_edge"
+    REMOVE_EDGE = "remove_edge"
+    ADD_SESSION = "add_session"
+    REMOVE_SESSION = "remove_session"
+    STOP = "stop"
+
+
+VALIDITY_ACTIONS = frozenset({
+    ActionType.ADD_EDGE,
+    ActionType.REMOVE_EDGE,
+})
+
+SEARCH_ACTIONS = frozenset({
+    ActionType.ADD_EDGE,
+    ActionType.REMOVE_EDGE,
+    ActionType.ADD_SESSION,
+    ActionType.REMOVE_SESSION,
+    ActionType.STOP,
+})
+
+
+@dataclass(frozen=True)
+class Action:
+    """One policy action and its optional target.
+
+    EDGE actions target an edge tuple. SESSION actions target a session tuple.
+    STOP has no target.
+    """
+
+    action_type: ActionType
+    target: Any = None
+
+    def __post_init__(self) -> None:
+        if self.action_type is ActionType.STOP and self.target is not None:
+            raise ValueError("STOP action cannot have a target")
+        if self.action_type is not ActionType.STOP and self.target is None:
+            raise ValueError(f"{self.action_type.value} requires a target")
+
+
+def actions_for_policy(policy: str) -> frozenset[ActionType]:
+    """Return the primitive action types allowed for a policy."""
+
+    if policy == "validity":
+        return VALIDITY_ACTIONS
+    if policy in {"minimization", "exploration"}:
+        return SEARCH_ACTIONS
+    raise ValueError(f"Unknown policy: {policy}")
+
+===== src/environment/state.py =====
+from dataclasses import dataclass
+from typing import Optional
+
+from .candidate import Candidate
+
+
+@dataclass
+class SCBState:
+    """
+    Represents the current state of the SCB search.
+
+    The state is intentionally kept small for now.
+    Controller-specific information such as stall counters
+    and retry counters will be added later.
+    """
+
+    candidate: Candidate
+    valid: bool
+    scb: Optional[float]
+    cut_size: int
+    selected_session_count: int
+    separated_sessions: int
+
+    def copy(self) -> "SCBState":
+        """Return an independent copy of the state."""
+        return SCBState(
+            candidate=self.candidate.copy(),
+            valid=self.valid,
+            scb=self.scb,
+            cut_size=self.cut_size,
+            selected_session_count=self.selected_session_count,
+            separated_sessions=self.separated_sessions,
+        )
+===== src/scb/problem.py =====
+"""Canonical mathematical representation of one SCB graph."""
+
+from dataclasses import dataclass, field
+from typing import Any
+
+from src.data.graph_schema import GraphInstance
+
+
+@dataclass
+class SCBProblem:
+    nodes: list[Any]
+    edges: list[tuple[Any, Any]]
+    sessions: list[tuple[Any, Any]]
+
+    node_to_idx: dict[Any, int] = field(init=False)
+    idx_to_node: dict[int, Any] = field(init=False)
+    edge_to_idx: dict[tuple[Any, Any], int] = field(init=False)
+    idx_to_edge: dict[int, tuple[Any, Any]] = field(init=False)
+    sessions_idx: list[tuple[int, int]] = field(init=False)
+
+    def __post_init__(self) -> None:
+        self.node_to_idx = {node: i for i, node in enumerate(self.nodes)}
+        self.idx_to_node = {i: node for node, i in self.node_to_idx.items()}
+        self.edge_to_idx = {edge: i for i, edge in enumerate(self.edges)}
+        self.idx_to_edge = {i: edge for edge, i in self.edge_to_idx.items()}
+
+        for edge in self.edges:
+            if edge[0] not in self.node_to_idx or edge[1] not in self.node_to_idx:
+                raise ValueError(f"Edge {edge} contains an unknown node")
+
+        self.sessions_idx = []
+        for source, target in self.sessions:
+            if source not in self.node_to_idx or target not in self.node_to_idx:
+                raise ValueError(f"Session {(source, target)} contains an unknown node")
+            self.sessions_idx.append((self.node_to_idx[source], self.node_to_idx[target]))
+
+    @classmethod
+    def from_graph(cls, graph: GraphInstance) -> "SCBProblem":
+        return cls(list(graph.nodes), list(graph.edges), list(graph.sessions))
+
+    @property
+    def num_nodes(self) -> int:
+        return len(self.nodes)
+
+    @property
+    def num_edges(self) -> int:
+        return len(self.edges)
+
+    @property
+    def num_sessions(self) -> int:
+        return len(self.sessions)
+
+===== src/models/policies.py =====
+from __future__ import annotations
+
+from dataclasses import dataclass
+from enum import Enum
+
+import torch
+import torch.nn as nn
+from torch.distributions import Categorical
+
+from src.environment.actions import Action, ActionType
+from src.environment.state import SCBState
+from src.models.action_scorer import ActionLogits, ActionScorer
+from src.models.scb_encoder import SCBEncoder, SCBEncoderOutput
+from src.scb.problem import SCBProblem
+
+
+class PolicyType(Enum):
+    VALIDITY = "validity"
+    MINIMIZATION = "minimization"
+    GLOBAL_EXPLORATION = "global_exploration"
+
+
+@dataclass
+class PolicyOutput:
+    """
+    Output of a policy decision.
+
+    action:
+        Concrete environment action.
+
+    action_index:
+        Flat index used internally by the categorical distribution.
+
+    log_prob:
+        Log probability of the selected action.
+
+    entropy:
+        Entropy of the action distribution.
+
+    logits:
+        Masked logits over the policy's complete action space.
+    """
+
+    action: Action
+    action_index: int
+    log_prob: torch.Tensor
+    entropy: torch.Tensor
+    logits: torch.Tensor
+
+
+class BaseSCBPolicy(nn.Module):
+    """
+    Base class for the three SCB policies.
+
+    The encoder is supplied externally and shared conceptually across
+    the three policies, while each policy owns its own ActionScorer.
+
+    Action ordering:
+
+        0 ... E-1
+            ADD_EDGE
+
+        E ... 2E-1
+            REMOVE_EDGE
+
+        2E ... 2E+S-1
+            ADD_SESSION
+
+        2E+S ... 2E+2S-1
+            REMOVE_SESSION
+
+        2E+2S
+            STOP
+    """
+
+    def __init__(
+        self,
+        policy_type: PolicyType,
+        hidden_dim: int = 128,
+        action_embedding_dim: int = 32,
+        scorer_hidden_dim: int = 128,
+    ):
+        super().__init__()
+
+        self.policy_type = policy_type
+
+        self.scorer = ActionScorer(
+            hidden_dim=hidden_dim,
+            action_embedding_dim=action_embedding_dim,
+            scorer_hidden_dim=scorer_hidden_dim,
+        )
+
+    # ---------------------------------------------------------
+    # ACTION SPACE
+    # ---------------------------------------------------------
+
+    @staticmethod
+    def action_space_size(
+        num_edges: int,
+        num_sessions: int,
+    ) -> int:
+        return (
+            2 * num_edges
+            + 2 * num_sessions
+            + 1
+        )
+
+    def _build_flat_logits(
+        self,
+        action_logits: ActionLogits,
+        num_edges: int,
+        num_sessions: int,
+    ) -> torch.Tensor:
+
+        return torch.cat(
+            [
+                action_logits.add_edge,
+                action_logits.remove_edge,
+                action_logits.add_session,
+                action_logits.remove_session,
+                action_logits.stop.reshape(1),
+            ],
+            dim=0,
+        )
+
+    # ---------------------------------------------------------
+    # ACTION MASK
+    # ---------------------------------------------------------
+
+    def _build_action_mask(
+        self,
+        problem: SCBProblem,
+        state: SCBState,
+    ) -> torch.Tensor:
+        """
+        Construct a syntactic/executable action mask.
+
+        True  = action is executable
+        False = action must be masked
+
+        IMPORTANT:
+            This does NOT determine SCB validity.
+
+            It only prevents nonsensical operations such as:
+                ADD_EDGE on an already-cut edge
+                REMOVE_EDGE on an uncut edge
+                ADD_SESSION on an already-selected session
+                REMOVE_SESSION on an unselected session
+        """
+
+        num_edges = problem.num_edges
+        num_sessions = problem.num_sessions
+
+        mask = torch.zeros(
+            self.action_space_size(
+                num_edges,
+                num_sessions,
+            ),
+            dtype=torch.bool,
+        )
+
+        candidate = state.candidate
+
+        # -----------------------------------------------------
+        # EDGE ACTIONS
+        # -----------------------------------------------------
+
+        for edge_index, edge in problem.idx_to_edge.items():
+
+            add_index = edge_index
+
+            remove_index = (
+                num_edges + edge_index
+            )
+
+            if edge not in candidate.cut_edges:
+                mask[add_index] = True
+
+            if edge in candidate.cut_edges:
+                mask[remove_index] = True
+
+        # -----------------------------------------------------
+        # SESSION ACTIONS
+        # -----------------------------------------------------
+
+        session_offset = 2 * num_edges
+
+        selected_sessions = candidate.selected_sessions
+
+        for session_index, session in enumerate(
+            problem.sessions
+        ):
+            add_index = (
+                session_offset
+                + session_index
+            )
+
+            remove_index = (
+                session_offset
+                + num_sessions
+                + session_index
+            )
+
+            if session not in selected_sessions:
+                mask[add_index] = True
+
+            if session in selected_sessions:
+                mask[remove_index] = True
+
+        # -----------------------------------------------------
+        # STOP
+        # -----------------------------------------------------
+
+        stop_index = (
+            2 * num_edges
+            + 2 * num_sessions
+        )
+
+        mask[stop_index] = True
+
+        # -----------------------------------------------------
+        # VALIDITY POLICY RESTRICTION
+        # -----------------------------------------------------
+
+        if self.policy_type == PolicyType.VALIDITY:
+
+            # Validity policy can only modify edges.
+            mask[
+                2 * num_edges:
+                2 * num_edges + 2 * num_sessions + 1
+            ] = False
+
+        return mask
+
+    # ---------------------------------------------------------
+    # MASK LOGITS
+    # ---------------------------------------------------------
+
+    @staticmethod
+    def _apply_mask(
+        logits: torch.Tensor,
+        mask: torch.Tensor,
+    ) -> torch.Tensor:
+
+        if logits.shape != mask.shape:
+            raise ValueError(
+                "Logit/mask shape mismatch: "
+                f"{logits.shape} vs {mask.shape}"
+            )
+
+        if not mask.any():
+            raise RuntimeError(
+                "Action mask contains no executable actions."
+            )
+
+        return logits.masked_fill(
+            ~mask.to(logits.device),
+            float("-inf"),
+        )
+
+    # ---------------------------------------------------------
+    # DECODE
+    # ---------------------------------------------------------
+
+    @staticmethod
+    @staticmethod
+    def _decode_action(
+        action_index: int,
+        problem: SCBProblem,
+    ) -> Action:
+
+        num_edges = problem.num_edges
+        num_sessions = problem.num_sessions
+
+        # ADD_EDGE
+        if action_index < num_edges:
+            return Action(
+                action_type=ActionType.ADD_EDGE,
+                target=problem.idx_to_edge[action_index],
+            )
+
+        # REMOVE_EDGE
+        action_index -= num_edges
+
+        if action_index < num_edges:
+            return Action(
+                action_type=ActionType.REMOVE_EDGE,
+                target=problem.idx_to_edge[action_index],
+            )
+
+        # ADD_SESSION
+        action_index -= num_edges
+
+        if action_index < num_sessions:
+            return Action(
+                action_type=ActionType.ADD_SESSION,
+                target=problem.sessions[action_index],
+            )
+
+        # REMOVE_SESSION
+        action_index -= num_sessions
+
+        if action_index < num_sessions:
+            return Action(
+                action_type=ActionType.REMOVE_SESSION,
+                target=problem.sessions[action_index],
+            )
+
+        # STOP
+        action_index -= num_sessions
+
+        if action_index == 0:
+            return Action(
+                action_type=ActionType.STOP,
+                target=None,
+            )
+
+        raise ValueError(
+            f"Invalid action index: {action_index}"
+        )
+
+    # ---------------------------------------------------------
+    # FORWARD
+    # ---------------------------------------------------------
+
+    def forward(
+        self,
+        encoder_output: SCBEncoderOutput,
+        problem: SCBProblem,
+        state: SCBState,
+        deterministic: bool = False,
+    ) -> PolicyOutput:
+
+        action_logits = self.scorer(
+            encoder_output
+        )
+
+        flat_logits = self._build_flat_logits(
+            action_logits,
+            problem.num_edges,
+            problem.num_sessions,
+        )
+
+        mask = self._build_action_mask(
+            problem,
+            state,
+        )
+
+        masked_logits = self._apply_mask(
+            flat_logits,
+            mask,
+        )
+
+        distribution = Categorical(
+            logits=masked_logits
+        )
+
+        if deterministic:
+            action_index_tensor = torch.argmax(
+                masked_logits
+            )
+        else:
+            action_index_tensor = distribution.sample()
+
+        action_index = int(
+            action_index_tensor.item()
+        )
+
+        action = self._decode_action(
+            action_index,
+            problem,
+        )
+
+        log_prob = distribution.log_prob(
+            action_index_tensor
+        )
+
+        entropy = distribution.entropy()
+
+        return PolicyOutput(
+            action=action,
+            action_index=action_index,
+            log_prob=log_prob,
+            entropy=entropy,
+            logits=masked_logits,
+        )
+
+
+# =============================================================
+# THREE POLICIES
+# =============================================================
+
+
+class ValidityPolicy(BaseSCBPolicy):
+    """
+    Learns to make the candidate valid.
+
+    Available actions:
+        ADD_EDGE
+        REMOVE_EDGE
+    """
+
+    def __init__(
+        self,
+        hidden_dim: int = 128,
+        action_embedding_dim: int = 32,
+        scorer_hidden_dim: int = 128,
+    ):
+        super().__init__(
+            policy_type=PolicyType.VALIDITY,
+            hidden_dim=hidden_dim,
+            action_embedding_dim=action_embedding_dim,
+            scorer_hidden_dim=scorer_hidden_dim,
+        )
+
+
+class MinimizationPolicy(BaseSCBPolicy):
+    """
+    Learns to reduce SCB after/while maintaining useful candidates.
+
+    Available actions:
+        ADD_EDGE
+        REMOVE_EDGE
+        ADD_SESSION
+        REMOVE_SESSION
+        STOP
+    """
+
+    def __init__(
+        self,
+        hidden_dim: int = 128,
+        action_embedding_dim: int = 32,
+        scorer_hidden_dim: int = 128,
+    ):
+        super().__init__(
+            policy_type=PolicyType.MINIMIZATION,
+            hidden_dim=hidden_dim,
+            action_embedding_dim=action_embedding_dim,
+            scorer_hidden_dim=scorer_hidden_dim,
+        )
+
+
+class GlobalExplorationPolicy(BaseSCBPolicy):
+    """
+    Searches for alternative joint (I', E') structures.
+
+    Available actions:
+        ADD_EDGE
+        REMOVE_EDGE
+        ADD_SESSION
+        REMOVE_SESSION
+        STOP
+    """
+
+    def __init__(
+        self,
+        hidden_dim: int = 128,
+        action_embedding_dim: int = 32,
+        scorer_hidden_dim: int = 128,
+    ):
+        super().__init__(
+            policy_type=PolicyType.GLOBAL_EXPLORATION,
+            hidden_dim=hidden_dim,
+            action_embedding_dim=action_embedding_dim,
+            scorer_hidden_dim=scorer_hidden_dim,
+        )
+
+
+__all__ = [
+    "PolicyType",
+    "PolicyOutput",
+    "BaseSCBPolicy",
+    "ValidityPolicy",
+    "MinimizationPolicy",
+    "GlobalExplorationPolicy",
+]
+===== src/models/scb_encoder.py =====
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+import torch
+from torch import Tensor, nn
+
+from src.environment.state import SCBState
+from src.scb.evaluator import evaluate_candidate
+from src.scb.problem import SCBProblem
+
+
+@dataclass
+class SCBEncoderOutput:
+    """
+    Structured representation produced by the shared SCB encoder.
+
+    These embeddings will later be consumed by the three policy heads.
+    """
+
+    node_embeddings: Tensor
+    edge_embeddings: Tensor
+    session_embeddings: Tensor
+    global_embedding: Tensor
+
+    # Session-specific representation of every edge.
+    # Shape: [num_sessions, num_edges, hidden_dim]
+    session_edge_embeddings: Tensor
+
+
+class EdgeAwareBlock(nn.Module):
+    """
+    Residual edge-aware graph message-passing block.
+
+    Nodes and edges are updated together.
+
+    For an edge u -- e -- v:
+
+        message(u -> v) = f(u, v, e)
+        message(v -> u) = f(v, u, e)
+
+    This allows edge state, including current cut status,
+    to influence graph propagation.
+    """
+
+    def __init__(self, hidden_dim: int):
+        super().__init__()
+
+        self.message = nn.Sequential(
+            nn.Linear(hidden_dim * 3, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, hidden_dim),
+        )
+
+        self.edge_update = nn.Sequential(
+            nn.Linear(hidden_dim * 3, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, hidden_dim),
+        )
+
+        self.node_update = nn.Sequential(
+            nn.Linear(hidden_dim * 2, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, hidden_dim),
+        )
+
+        self.node_norm = nn.LayerNorm(hidden_dim)
+        self.edge_norm = nn.LayerNorm(hidden_dim)
+
+    def forward(
+        self,
+        node_h: Tensor,
+        edge_h: Tensor,
+        edge_index: Tensor,
+    ) -> tuple[Tensor, Tensor]:
+
+        src = edge_index[0]
+        dst = edge_index[1]
+
+        src_h = node_h[src]
+        dst_h = node_h[dst]
+
+        # ------------------------------------------------------------
+        # Update edges
+        # ------------------------------------------------------------
+
+        edge_input = torch.cat(
+            [src_h, dst_h, edge_h],
+            dim=-1,
+        )
+
+        new_edge = edge_h + self.edge_update(edge_input)
+        new_edge = self.edge_norm(new_edge)
+
+        # ------------------------------------------------------------
+        # Send messages in both directions
+        # ------------------------------------------------------------
+
+        forward_msg = self.message(
+            torch.cat(
+                [src_h, dst_h, new_edge],
+                dim=-1,
+            )
+        )
+
+        backward_msg = self.message(
+            torch.cat(
+                [dst_h, src_h, new_edge],
+                dim=-1,
+            )
+        )
+
+        # ------------------------------------------------------------
+        # Aggregate messages at nodes
+        # ------------------------------------------------------------
+
+        aggregated = torch.zeros_like(node_h)
+
+        aggregated.index_add_(
+            0,
+            src,
+            backward_msg,
+        )
+
+        aggregated.index_add_(
+            0,
+            dst,
+            forward_msg,
+        )
+
+        # Normalize by node degree so high-degree nodes don't
+        # automatically dominate simply because they receive
+        # more messages.
+        degree = torch.zeros(
+            node_h.size(0),
+            device=node_h.device,
+            dtype=node_h.dtype,
+        )
+
+        ones = torch.ones(
+            src.size(0),
+            device=node_h.device,
+            dtype=node_h.dtype,
+        )
+
+        degree.index_add_(0, src, ones)
+        degree.index_add_(0, dst, ones)
+
+        aggregated = aggregated / degree.clamp_min(1.0).unsqueeze(-1)
+
+        # ------------------------------------------------------------
+        # Residual node update
+        # ------------------------------------------------------------
+
+        new_node = node_h + self.node_update(
+            torch.cat(
+                [node_h, aggregated],
+                dim=-1,
+            )
+        )
+
+        new_node = self.node_norm(new_node)
+
+        return new_node, new_edge
+
+
+class SessionConditionedBlock(nn.Module):
+    """
+    Session-conditioned graph propagation.
+
+    Every source-sink pair gets its own graph-level propagation state.
+
+    Therefore the same physical edge can eventually have different
+    representations for different sessions.
+    """
+
+    def __init__(self, hidden_dim: int):
+        super().__init__()
+
+        self.message = nn.Sequential(
+            nn.Linear(hidden_dim * 4, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, hidden_dim),
+        )
+
+        self.node_update = nn.Sequential(
+            nn.Linear(hidden_dim * 2, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, hidden_dim),
+        )
+
+        self.session_update = nn.Sequential(
+            nn.Linear(hidden_dim * 3, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, hidden_dim),
+        )
+
+        self.node_norm = nn.LayerNorm(hidden_dim)
+        self.session_norm = nn.LayerNorm(hidden_dim)
+
+    def forward(
+        self,
+        node_h: Tensor,
+        edge_h: Tensor,
+        session_h: Tensor,
+        session_nodes: Tensor,
+        edge_index: Tensor,
+    ) -> tuple[Tensor, Tensor]:
+
+        # session_nodes:
+        # [num_sessions, num_nodes, hidden_dim]
+
+        num_sessions, num_nodes, hidden_dim = session_nodes.shape
+
+        src = edge_index[0]
+        dst = edge_index[1]
+
+        num_edges = edge_index.size(1)
+
+        src_h = session_nodes[:, src, :]
+        dst_h = session_nodes[:, dst, :]
+
+        edge_context = edge_h.unsqueeze(0).expand(
+            num_sessions,
+            num_edges,
+            hidden_dim,
+        )
+
+        session_context = session_h.unsqueeze(1).expand(
+            num_sessions,
+            num_edges,
+            hidden_dim,
+        )
+
+        # ------------------------------------------------------------
+        # Session-conditioned edge messages
+        # ------------------------------------------------------------
+
+        messages = self.message(
+            torch.cat(
+                [
+                    src_h,
+                    dst_h,
+                    edge_context,
+                    session_context,
+                ],
+                dim=-1,
+            )
+        )
+
+        # ------------------------------------------------------------
+        # Aggregate into session-specific node states
+        # ------------------------------------------------------------
+
+        aggregated = torch.zeros_like(session_nodes)
+
+        aggregated.index_add_(
+            1,
+            src,
+            messages,
+        )
+
+        aggregated.index_add_(
+            1,
+            dst,
+            messages,
+        )
+
+        degree = torch.zeros(
+            num_nodes,
+            device=node_h.device,
+            dtype=node_h.dtype,
+        )
+
+        ones = torch.ones(
+            num_edges,
+            device=node_h.device,
+            dtype=node_h.dtype,
+        )
+
+        degree.index_add_(0, src, ones)
+        degree.index_add_(0, dst, ones)
+
+        aggregated = aggregated / degree.clamp_min(1.0).view(
+            1,
+            num_nodes,
+            1,
+        )
+
+        # ------------------------------------------------------------
+        # Update session-specific nodes
+        # ------------------------------------------------------------
+
+        updated_nodes = session_nodes + self.node_update(
+            torch.cat(
+                [
+                    session_nodes,
+                    aggregated,
+                ],
+                dim=-1,
+            )
+        )
+
+        updated_nodes = self.node_norm(updated_nodes)
+
+        # ------------------------------------------------------------
+        # Update session representations
+        # ------------------------------------------------------------
+
+        pooled_nodes = updated_nodes.mean(dim=1)
+
+        updated_sessions = session_h + self.session_update(
+            torch.cat(
+                [
+                    session_h,
+                    pooled_nodes,
+                    session_h,
+                ],
+                dim=-1,
+            )
+        )
+
+        updated_sessions = self.session_norm(updated_sessions)
+
+        return updated_sessions, updated_nodes
+
+
+class SCBEncoder(nn.Module):
+    """
+    Shared structural encoder for the joint SCB RL system.
+
+    It does NOT:
+        - choose actions
+        - use GA results
+        - calculate rewards
+        - perform PPO
+        - control curriculum
+
+    Its job is to transform the current:
+
+        Graph + Candidate (I', E')
+
+    into learned node, edge, session and global representations.
+    """
+
+    NODE_INPUT_DIM = 4
+    EDGE_INPUT_DIM = 3
+    SESSION_FLAG_DIM = 2
+    CANDIDATE_INPUT_DIM = 5
+
+    def __init__(
+        self,
+        hidden_dim: int = 128,
+        topology_layers: int = 3,
+        session_layers: int = 2,
+    ):
+        super().__init__()
+
+        if hidden_dim <= 0:
+            raise ValueError("hidden_dim must be positive")
+
+        if topology_layers < 1:
+            raise ValueError(
+                "topology_layers must be at least 1"
+            )
+
+        if session_layers < 1:
+            raise ValueError(
+                "session_layers must be at least 1"
+            )
+
+        self.hidden_dim = hidden_dim
+
+        # ------------------------------------------------------------
+        # Initial projections
+        # ------------------------------------------------------------
+
+        self.node_projection = nn.Sequential(
+            nn.Linear(
+                self.NODE_INPUT_DIM,
+                hidden_dim,
+            ),
+            nn.GELU(),
+            nn.LayerNorm(hidden_dim),
+        )
+
+        self.edge_projection = nn.Sequential(
+            nn.Linear(
+                self.EDGE_INPUT_DIM,
+                hidden_dim,
+            ),
+            nn.GELU(),
+            nn.LayerNorm(hidden_dim),
+        )
+
+        self.session_projection = nn.Sequential(
+            nn.Linear(
+                hidden_dim * 2 + self.SESSION_FLAG_DIM,
+                hidden_dim,
+            ),
+            nn.GELU(),
+            nn.LayerNorm(hidden_dim),
+        )
+
+        # Learned markers identifying the source and sink of
+        # each session during session-conditioned propagation.
+        self.source_marker = nn.Parameter(
+            torch.randn(hidden_dim) * 0.02
+        )
+
+        self.sink_marker = nn.Parameter(
+            torch.randn(hidden_dim) * 0.02
+        )
+
+        # ------------------------------------------------------------
+        # Graph topology reasoning
+        # ------------------------------------------------------------
+
+        self.topology_blocks = nn.ModuleList(
+            EdgeAwareBlock(hidden_dim)
+            for _ in range(topology_layers)
+        )
+
+        # ------------------------------------------------------------
+        # Session-conditioned reasoning
+        # ------------------------------------------------------------
+
+        self.session_blocks = nn.ModuleList(
+            SessionConditionedBlock(hidden_dim)
+            for _ in range(session_layers)
+        )
+
+        # ------------------------------------------------------------
+        # Session ↔ edge attention
+        # ------------------------------------------------------------
+
+        self.session_edge_attention = nn.Sequential(
+            nn.Linear(
+                hidden_dim * 3,
+                hidden_dim,
+            ),
+            nn.GELU(),
+            nn.Linear(hidden_dim, 1),
+        )
+
+        # ------------------------------------------------------------
+        # Global representation
+        # ------------------------------------------------------------
+
+        self.global_projection = nn.Sequential(
+            nn.Linear(
+                hidden_dim * 4 + self.CANDIDATE_INPUT_DIM,
+                hidden_dim,
+            ),
+            nn.GELU(),
+            nn.LayerNorm(hidden_dim),
+        )
+
+    def forward(
+        self,
+        problem: SCBProblem,
+        state: SCBState,
+    ) -> SCBEncoderOutput:
+
+        if state.candidate is None:
+            raise ValueError(
+                "SCBState must contain a Candidate."
+            )
+
+        device = next(self.parameters()).device
+
+        (
+            node_features,
+            edge_features,
+            edge_index,
+        ) = self._build_graph_features(
+            problem,
+            state,
+            device,
+        )
+
+        # ============================================================
+        # INITIAL NODE / EDGE EMBEDDINGS
+        # ============================================================
+
+        node_h = self.node_projection(
+            node_features
+        )
+
+        edge_h = self.edge_projection(
+            edge_features
+        )
+
+        # ============================================================
+        # TOPOLOGY REASONING
+        # ============================================================
+
+        for block in self.topology_blocks:
+            node_h, edge_h = block(
+                node_h,
+                edge_h,
+                edge_index,
+            )
+
+        # ============================================================
+        # SESSION REPRESENTATIONS
+        # ============================================================
+
+        (
+            session_features,
+            source_idx,
+            sink_idx,
+        ) = self._build_session_features(
+            problem,
+            state,
+            node_h,
+            device,
+        )
+
+        session_h = self.session_projection(
+            session_features
+        )
+
+        # ============================================================
+        # INITIAL SESSION-CONDITIONED NODE STATES
+        # ============================================================
+
+        num_sessions = problem.num_sessions
+
+        session_nodes = (
+            node_h
+            .unsqueeze(0)
+            .expand(
+                num_sessions,
+                -1,
+                -1,
+            )
+            .clone()
+        )
+
+        source_mask = self._node_session_mask(
+            problem.num_nodes,
+            source_idx,
+            device,
+        )
+
+        sink_mask = self._node_session_mask(
+            problem.num_nodes,
+            sink_idx,
+            device,
+        )
+
+        session_nodes = (
+            session_nodes
+            + self.source_marker * source_mask
+            + self.sink_marker * sink_mask
+        )
+
+        # ============================================================
+        # SESSION-CONDITIONED PROPAGATION
+        # ============================================================
+
+        for block in self.session_blocks:
+            session_h, session_nodes = block(
+                node_h,
+                edge_h,
+                session_h,
+                session_nodes,
+                edge_index,
+            )
+
+        # ============================================================
+        # SESSION-SPECIFIC EDGE REPRESENTATIONS
+        # ============================================================
+
+        src = edge_index[0]
+        dst = edge_index[1]
+
+        session_src = session_nodes[:, src, :]
+        session_dst = session_nodes[:, dst, :]
+
+        edge_context = edge_h.unsqueeze(0).expand(
+            num_sessions,
+            -1,
+            -1,
+        )
+
+        session_edge_embeddings = (
+            session_src
+            + session_dst
+            + edge_context
+        )
+
+        # ============================================================
+        # ATTENTION ACROSS SESSIONS
+        # ============================================================
+
+        attention_input = torch.cat(
+            [
+                session_edge_embeddings,
+                session_h.unsqueeze(1).expand_as(
+                    session_edge_embeddings
+                ),
+                edge_context,
+            ],
+            dim=-1,
+        )
+
+        attention_logits = (
+            self.session_edge_attention(
+                attention_input
+            )
+            .squeeze(-1)
+        )
+
+        attention = torch.softmax(
+            attention_logits,
+            dim=0,
+        )
+
+        # Joint edge representation.
+        joint_edge_h = (
+            attention.unsqueeze(-1)
+            * session_edge_embeddings
+        ).sum(dim=0)
+
+        # ============================================================
+        # GLOBAL REPRESENTATION
+        # ============================================================
+
+        global_node = node_h.mean(dim=0)
+        global_edge = joint_edge_h.mean(dim=0)
+        global_session = session_h.mean(dim=0)
+        global_session_edge = (
+            session_edge_embeddings.mean(dim=(0, 1))
+        )
+
+        candidate_features = self._candidate_features(
+            problem,
+            state,
+            device,
+        )
+
+        global_input = torch.cat(
+            [
+                global_node,
+                global_edge,
+                global_session,
+                global_session_edge,
+                candidate_features,
+            ],
+            dim=-1,
+        )
+
+        global_h = self.global_projection(
+            global_input
+        )
+
+        return SCBEncoderOutput(
+            node_embeddings=node_h,
+            edge_embeddings=joint_edge_h,
+            session_embeddings=session_h,
+            global_embedding=global_h,
+            session_edge_embeddings=session_edge_embeddings,
+        )
+
+    # =================================================================
+    # FEATURE CONSTRUCTION
+    # =================================================================
+
+    def _build_graph_features(
+        self,
+        problem: SCBProblem,
+        state: SCBState,
+        device: torch.device,
+    ) -> tuple[Tensor, Tensor, Tensor]:
+
+        num_nodes = problem.num_nodes
+        num_edges = problem.num_edges
+
+        # ------------------------------------------------------------
+        # Node degrees
+        # ------------------------------------------------------------
+
+        degrees = torch.zeros(
+            num_nodes,
+            dtype=torch.float32,
+            device=device,
+        )
+
+        edge_pairs = []
+
+        for edge in problem.edges:
+
+            u = problem.node_to_idx[edge[0]]
+            v = problem.node_to_idx[edge[1]]
+
+            edge_pairs.append((u, v))
+
+            degrees[u] += 1.0
+            degrees[v] += 1.0
+
+        max_degree = degrees.max().clamp_min(1.0)
+
+        degree_norm = degrees / max_degree
+
+        # ------------------------------------------------------------
+        # Session participation
+        # ------------------------------------------------------------
+
+        selected = state.candidate.selected_sessions
+
+        num_sessions = max(
+            problem.num_sessions,
+            1,
+        )
+
+        source_counts = torch.zeros(
+            num_nodes,
+            dtype=torch.float32,
+            device=device,
+        )
+
+        sink_counts = torch.zeros(
+            num_nodes,
+            dtype=torch.float32,
+            device=device,
+        )
+
+        touch_counts = torch.zeros(
+            num_nodes,
+            dtype=torch.float32,
+            device=device,
+        )
+
+        for session in selected:
+
+            source, target = session
+
+            source_idx = problem.node_to_idx[source]
+            target_idx = problem.node_to_idx[target]
+
+            source_counts[source_idx] += 1.0
+            sink_counts[target_idx] += 1.0
+
+            touch_counts[source_idx] += 1.0
+            touch_counts[target_idx] += 1.0
+
+        node_features = torch.stack(
+            [
+                degree_norm,
+                source_counts / num_sessions,
+                sink_counts / num_sessions,
+                touch_counts / (2.0 * num_sessions),
+            ],
+            dim=-1,
+        )
+
+        # ------------------------------------------------------------
+        # Edge features
+        # ------------------------------------------------------------
+
+        cut_edges = state.candidate.cut_edges
+
+        edge_features = []
+
+        for u, v in edge_pairs:
+
+            edge = problem.idx_to_edge[u]
+
+            reverse = (
+                edge[1],
+                edge[0],
+            )
+
+            is_cut = float(
+                edge in cut_edges
+                or reverse in cut_edges
+            )
+
+            edge_features.append(
+                [
+                    is_cut,
+                    float(degree_norm[u]),
+                    float(degree_norm[v]),
+                ]
+            )
+
+        if num_edges:
+
+            edge_features_tensor = torch.tensor(
+                edge_features,
+                dtype=torch.float32,
+                device=device,
+            )
+
+            edge_index = torch.tensor(
+                edge_pairs,
+                dtype=torch.long,
+                device=device,
+            ).t().contiguous()
+
+        else:
+
+            edge_features_tensor = torch.empty(
+                (
+                    0,
+                    self.EDGE_INPUT_DIM,
+                ),
+                dtype=torch.float32,
+                device=device,
+            )
+
+            edge_index = torch.empty(
+                (2, 0),
+                dtype=torch.long,
+                device=device,
+            )
+
+        return (
+            node_features,
+            edge_features_tensor,
+            edge_index,
+        )
+
+    def _build_session_features(
+        self,
+        problem: SCBProblem,
+        state: SCBState,
+        node_h: Tensor,
+        device: torch.device,
+    ) -> tuple[Tensor, Tensor, Tensor]:
+
+        evaluation = evaluate_candidate(
+            problem,
+            selected_sessions=set(
+                state.candidate.selected_sessions
+            ),
+            cut_edges=set(
+                state.candidate.cut_edges
+            ),
+        )
+
+        separated = set(
+            evaluation.separated_sessions
+        )
+
+        source_idx = torch.tensor(
+            [
+                problem.node_to_idx[source]
+                for source, _ in problem.sessions
+            ],
+            dtype=torch.long,
+            device=device,
+        )
+
+        sink_idx = torch.tensor(
+            [
+                problem.node_to_idx[target]
+                for _, target in problem.sessions
+            ],
+            dtype=torch.long,
+            device=device,
+        )
+
+        selected = state.candidate.selected_sessions
+
+        session_flags = []
+
+        for session in problem.sessions:
+
+            session_flags.append(
+                [
+                    float(session in selected),
+                    float(session in separated),
+                ]
+            )
+
+        session_flags = torch.tensor(
+            session_flags,
+            dtype=torch.float32,
+            device=device,
+        )
+
+        session_features = torch.cat(
+            [
+                node_h[source_idx],
+                node_h[sink_idx],
+                session_flags,
+            ],
+            dim=-1,
+        )
+
+        return (
+            session_features,
+            source_idx,
+            sink_idx,
+        )
+
+    @staticmethod
+    def _node_session_mask(
+        num_nodes: int,
+        indices: Tensor,
+        device: torch.device,
+    ) -> Tensor:
+
+        mask = torch.zeros(
+            indices.numel(),
+            num_nodes,
+            1,
+            dtype=torch.float32,
+            device=device,
+        )
+
+        mask.scatter_(
+            1,
+            indices.view(-1, 1, 1).expand(
+                -1,
+                -1,
+                1,
+            ),
+            1.0,
+        )
+
+        return mask
+
+    def _candidate_features(
+        self,
+        problem: SCBProblem,
+        state: SCBState,
+        device: torch.device,
+    ) -> Tensor:
+
+        candidate = state.candidate
+
+        num_sessions = max(
+            problem.num_sessions,
+            1,
+        )
+
+        num_edges = max(
+            problem.num_edges,
+            1,
+        )
+
+        scb = (
+            state.scb
+            if state.scb is not None
+            else 0.0
+        )
+
+        # Scale SCB so that it is not dramatically larger than
+        # the other candidate-level features.
+        scb_scale = float(
+            max(problem.num_edges, 1)
+        )
+
+        return torch.tensor(
+            [
+                candidate.num_selected_sessions
+                / num_sessions,
+
+                candidate.num_cut_edges
+                / num_edges,
+
+                state.separated_sessions
+                / num_sessions,
+
+                float(state.valid),
+
+                float(scb) / scb_scale,
+            ],
+            dtype=torch.float32,
+            device=device,
+        )
+===== src/models/action_scorer.py =====
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+import torch
+import torch.nn as nn
+
+from src.environment.actions import ActionType
+from src.models.scb_encoder import SCBEncoderOutput
+
+
+@dataclass
+class ActionLogits:
+    """
+    Raw logits for every possible action.
+
+    Shapes:
+        add_edge:       [num_edges]
+        remove_edge:    [num_edges]
+        add_session:    [num_sessions]
+        remove_session: [num_sessions]
+        stop:            scalar
+    """
+
+    add_edge: torch.Tensor
+    remove_edge: torch.Tensor
+    add_session: torch.Tensor
+    remove_session: torch.Tensor
+    stop: torch.Tensor
+
+    def for_action_type(self, action_type: ActionType) -> torch.Tensor:
+        if action_type == ActionType.ADD_EDGE:
+            return self.add_edge
+
+        if action_type == ActionType.REMOVE_EDGE:
+            return self.remove_edge
+
+        if action_type == ActionType.ADD_SESSION:
+            return self.add_session
+
+        if action_type == ActionType.REMOVE_SESSION:
+            return self.remove_session
+
+        if action_type == ActionType.STOP:
+            return self.stop.reshape(1)
+
+        raise ValueError(f"Unsupported action type: {action_type}")
+
+
+class ActionScorer(nn.Module):
+    """
+    Scores all candidate actions from the shared SCB encoder output.
+
+    Important:
+        This module does NOT perform action masking.
+
+    It answers:
+        "How attractive does the network think each action is?"
+
+    The policy layer will later answer:
+        "Which of those actions are currently executable?"
+    """
+
+    def __init__(
+        self,
+        hidden_dim: int = 128,
+        action_embedding_dim: int = 32,
+        scorer_hidden_dim: int = 128,
+    ):
+        super().__init__()
+
+        self.hidden_dim = hidden_dim
+
+        self.action_type_embedding = nn.Embedding(
+            num_embeddings=5,
+            embedding_dim=action_embedding_dim,
+        )
+
+        edge_input_dim = (
+            hidden_dim
+            + hidden_dim
+            + action_embedding_dim
+        )
+
+        session_input_dim = (
+            hidden_dim
+            + hidden_dim
+            + action_embedding_dim
+        )
+
+        stop_input_dim = hidden_dim + action_embedding_dim
+
+        self.edge_scorer = nn.Sequential(
+            nn.Linear(edge_input_dim, scorer_hidden_dim),
+            nn.ReLU(),
+            nn.Linear(scorer_hidden_dim, 1),
+        )
+
+        self.session_scorer = nn.Sequential(
+            nn.Linear(session_input_dim, scorer_hidden_dim),
+            nn.ReLU(),
+            nn.Linear(scorer_hidden_dim, 1),
+        )
+
+        self.stop_scorer = nn.Sequential(
+            nn.Linear(stop_input_dim, scorer_hidden_dim),
+            nn.ReLU(),
+            nn.Linear(scorer_hidden_dim, 1),
+        )
+
+    @staticmethod
+    def _action_id(action_type: ActionType) -> int:
+        mapping = {
+            ActionType.ADD_EDGE: 0,
+            ActionType.REMOVE_EDGE: 1,
+            ActionType.ADD_SESSION: 2,
+            ActionType.REMOVE_SESSION: 3,
+            ActionType.STOP: 4,
+        }
+
+        return mapping[action_type]
+
+    def _action_embedding(
+        self,
+        action_type: ActionType,
+        device: torch.device,
+    ) -> torch.Tensor:
+        action_id = torch.tensor(
+            self._action_id(action_type),
+            dtype=torch.long,
+            device=device,
+        )
+
+        return self.action_type_embedding(action_id)
+
+    def forward(
+        self,
+        encoder_output: SCBEncoderOutput,
+    ) -> ActionLogits:
+
+        global_embedding = encoder_output.global_embedding
+        edge_embeddings = encoder_output.edge_embeddings
+        session_embeddings = encoder_output.session_embeddings
+
+        device = global_embedding.device
+
+        # ---------------------------------------------------------
+        # EDGE ACTIONS
+        # ---------------------------------------------------------
+
+        add_edge_embedding = self._action_embedding(
+            ActionType.ADD_EDGE,
+            device,
+        )
+
+        remove_edge_embedding = self._action_embedding(
+            ActionType.REMOVE_EDGE,
+            device,
+        )
+
+        # [num_edges, hidden_dim]
+        global_for_edges = global_embedding.unsqueeze(0).expand(
+            edge_embeddings.shape[0],
+            -1,
+        )
+
+        # [num_edges, action_embedding_dim]
+        add_edge_action = add_edge_embedding.unsqueeze(0).expand(
+            edge_embeddings.shape[0],
+            -1,
+        )
+
+        remove_edge_action = remove_edge_embedding.unsqueeze(0).expand(
+            edge_embeddings.shape[0],
+            -1,
+        )
+
+        add_edge_input = torch.cat(
+            [
+                global_for_edges,
+                edge_embeddings,
+                add_edge_action,
+            ],
+            dim=-1,
+        )
+
+        remove_edge_input = torch.cat(
+            [
+                global_for_edges,
+                edge_embeddings,
+                remove_edge_action,
+            ],
+            dim=-1,
+        )
+
+        add_edge_logits = self.edge_scorer(
+            add_edge_input
+        ).squeeze(-1)
+
+        remove_edge_logits = self.edge_scorer(
+            remove_edge_input
+        ).squeeze(-1)
+
+        # ---------------------------------------------------------
+        # SESSION ACTIONS
+        # ---------------------------------------------------------
+
+        add_session_embedding = self._action_embedding(
+            ActionType.ADD_SESSION,
+            device,
+        )
+
+        remove_session_embedding = self._action_embedding(
+            ActionType.REMOVE_SESSION,
+            device,
+        )
+
+        # [num_sessions, hidden_dim]
+        global_for_sessions = global_embedding.unsqueeze(0).expand(
+            session_embeddings.shape[0],
+            -1,
+        )
+
+        add_session_action = add_session_embedding.unsqueeze(0).expand(
+            session_embeddings.shape[0],
+            -1,
+        )
+
+        remove_session_action = remove_session_embedding.unsqueeze(0).expand(
+            session_embeddings.shape[0],
+            -1,
+        )
+
+        add_session_input = torch.cat(
+            [
+                global_for_sessions,
+                session_embeddings,
+                add_session_action,
+            ],
+            dim=-1,
+        )
+
+        remove_session_input = torch.cat(
+            [
+                global_for_sessions,
+                session_embeddings,
+                remove_session_action,
+            ],
+            dim=-1,
+        )
+
+        add_session_logits = self.session_scorer(
+            add_session_input
+        ).squeeze(-1)
+
+        remove_session_logits = self.session_scorer(
+            remove_session_input
+        ).squeeze(-1)
+
+        # ---------------------------------------------------------
+        # STOP
+        # ---------------------------------------------------------
+
+        stop_embedding = self._action_embedding(
+            ActionType.STOP,
+            device,
+        )
+
+        stop_input = torch.cat(
+            [
+                global_embedding,
+                stop_embedding,
+            ],
+            dim=-1,
+        )
+
+        stop_logit = self.stop_scorer(
+            stop_input
+        )
+
+        return ActionLogits(
+            add_edge=add_edge_logits,
+            remove_edge=remove_edge_logits,
+            add_session=add_session_logits,
+            remove_session=remove_session_logits,
+            stop=stop_logit,
+        )
+===== src/models/value_head.py =====
+import torch
+import torch.nn as nn
+
+
+class SCBValueHead(nn.Module):
+    """
+    Shared critic/value network for the SCB RL system.
+
+    Input:
+        global_embedding from SCBEncoder
+
+    Output:
+        V(s), a scalar estimate of the value of the current state.
+
+    The critic is shared across all three policies.
+    """
+
+    def __init__(
+        self,
+        hidden_dim: int = 128,
+        value_hidden_dim: int = 128,
+    ):
+        super().__init__()
+
+        self.hidden_dim = hidden_dim
+
+        self.network = nn.Sequential(
+            nn.Linear(hidden_dim, value_hidden_dim),
+            nn.ReLU(),
+            nn.Linear(value_hidden_dim, 1),
+        )
+
+    def forward(
+        self,
+        global_embedding: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        Parameters
+        ----------
+        global_embedding:
+            Shape [hidden_dim] or [batch_size, hidden_dim].
+
+        Returns
+        -------
+        torch.Tensor
+            Shape [1] for a single state or [batch_size] for a batch.
+        """
+
+        if global_embedding.ndim == 1:
+            if global_embedding.shape[0] != self.hidden_dim:
+                raise ValueError(
+                    f"Expected embedding dimension {self.hidden_dim}, "
+                    f"got {global_embedding.shape[0]}."
+                )
+
+            value = self.network(
+                global_embedding.unsqueeze(0)
+            )
+
+            return value.squeeze(0)
+
+        if global_embedding.ndim == 2:
+            if global_embedding.shape[1] != self.hidden_dim:
+                raise ValueError(
+                    f"Expected embedding dimension {self.hidden_dim}, "
+                    f"got {global_embedding.shape[1]}."
+                )
+
+            value = self.network(
+                global_embedding
+            )
+
+            return value.squeeze(-1)
+
+        raise ValueError(
+            "global_embedding must have shape "
+            "[hidden_dim] or [batch_size, hidden_dim]."
+        )
+===== src/training/ppo_updater.py =====
+"""PPO optimization for the joint SCB RL system."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Iterable, Optional
+
+import torch
+from torch import Tensor, nn
+
+
+@dataclass
+class PPOUpdateStats:
+    """Statistics returned after one PPO update."""
+
+    policy_loss: float
+    value_loss: float
+    entropy: float
+
+    total_loss: float
+
+    approx_kl: float
+    clip_fraction: float
+
+    grad_norm: float
+
+    num_epochs: int
+    num_samples: int
+
+
+class PPOUpdater:
+    """
+    PPO optimizer for the joint SCB policy/value network.
+
+    The updater is intentionally independent of:
+
+        Environment
+        Controller
+        Policy phase logic
+        GA
+        Reward construction
+        Rollout generation
+
+    It operates only on the collected rollout and the trainable model.
+
+    Expected rollout transition fields:
+
+        log_prob
+        entropy
+        reward
+        done
+
+    GAE is expected to have already produced:
+
+        advantages
+        returns
+
+    The updater therefore does not recompute GAE.
+    """
+
+    def __init__(
+        self,
+        model: nn.Module,
+        learning_rate: float = 3e-4,
+        clip_epsilon: float = 0.2,
+        value_coef: float = 0.5,
+        entropy_coef: float = 0.01,
+        max_grad_norm: float = 0.5,
+        ppo_epochs: int = 4,
+        minibatch_size: Optional[int] = None,
+    ):
+        if learning_rate <= 0:
+            raise ValueError(
+                "learning_rate must be positive."
+            )
+
+        if clip_epsilon <= 0:
+            raise ValueError(
+                "clip_epsilon must be positive."
+            )
+
+        if value_coef < 0:
+            raise ValueError(
+                "value_coef cannot be negative."
+            )
+
+        if entropy_coef < 0:
+            raise ValueError(
+                "entropy_coef cannot be negative."
+            )
+
+        if max_grad_norm <= 0:
+            raise ValueError(
+                "max_grad_norm must be positive."
+            )
+
+        if ppo_epochs <= 0:
+            raise ValueError(
+                "ppo_epochs must be positive."
+            )
+
+        if minibatch_size is not None and minibatch_size <= 0:
+            raise ValueError(
+                "minibatch_size must be positive."
+            )
+
+        self.model = model
+
+        self.clip_epsilon = clip_epsilon
+        self.value_coef = value_coef
+        self.entropy_coef = entropy_coef
+        self.max_grad_norm = max_grad_norm
+
+        self.ppo_epochs = ppo_epochs
+        self.minibatch_size = minibatch_size
+
+        self.optimizer = torch.optim.Adam(
+            self.model.parameters(),
+            lr=learning_rate,
+        )
+
+    # =========================================================
+    # UTILITY
+    # =========================================================
+
+    @staticmethod
+    def _to_tensor(
+        values: Iterable,
+        device: torch.device,
+        dtype: torch.dtype = torch.float32,
+    ) -> Tensor:
+
+        return torch.as_tensor(
+            list(values),
+            dtype=dtype,
+            device=device,
+        )
+
+    @staticmethod
+    def _extract(
+        rollout,
+        field: str,
+    ):
+        """
+        Extract one field from a rollout.
+
+        Supports both:
+
+            RolloutBuffer
+            list[RolloutTransition]
+        """
+
+        if hasattr(rollout, "transitions"):
+            transitions = rollout.transitions
+        else:
+            transitions = rollout
+
+        return [
+            getattr(transition, field)
+            for transition in transitions
+        ]
+
+    # =========================================================
+    # BATCH PREPARATION
+    # =========================================================
+
+    def _prepare_batch(
+        self,
+        rollout,
+        advantages: Tensor,
+        returns: Tensor,
+    ):
+        """
+        Prepare old PPO quantities from the rollout.
+
+        States/actions remain attached to the transition objects
+        because the actual policy/value evaluation is model-specific.
+
+        This method only validates the PPO bookkeeping tensors.
+        """
+
+        if hasattr(rollout, "__len__"):
+            num_samples = len(rollout)
+        elif hasattr(rollout, "transitions"):
+            num_samples = len(rollout.transitions)
+        else:
+            raise TypeError(
+                "rollout must be iterable or expose transitions."
+            )
+
+        if num_samples == 0:
+            raise ValueError(
+                "Cannot perform PPO update on an empty rollout."
+            )
+
+        if advantages.ndim != 1:
+            raise ValueError(
+                "advantages must be a 1-D tensor."
+            )
+
+        if returns.ndim != 1:
+            raise ValueError(
+                "returns must be a 1-D tensor."
+            )
+
+        if len(advantages) != num_samples:
+            raise ValueError(
+                "advantages length does not match rollout."
+            )
+
+        if len(returns) != num_samples:
+            raise ValueError(
+                "returns length does not match rollout."
+            )
+
+        old_log_probs = self._extract(
+            rollout,
+            "log_prob",
+        )
+
+        old_log_probs = self._to_tensor(
+            [
+                value.item()
+                if isinstance(value, Tensor)
+                else value
+                for value in old_log_probs
+            ],
+            device=advantages.device,
+        )
+
+        return old_log_probs
+
+    # =========================================================
+    # PPO LOSS
+    # =========================================================
+
+    def compute_policy_loss(
+        self,
+        new_log_probs: Tensor,
+        old_log_probs: Tensor,
+        advantages: Tensor,
+    ) -> tuple[Tensor, Tensor]:
+        """
+        Calculate PPO clipped policy loss.
+
+        Returns:
+
+            policy_loss
+            clip_fraction
+        """
+
+        log_ratio = (
+            new_log_probs - old_log_probs
+        )
+
+        ratio = torch.exp(log_ratio)
+
+        unclipped = (
+            ratio * advantages
+        )
+
+        clipped_ratio = torch.clamp(
+            ratio,
+            1.0 - self.clip_epsilon,
+            1.0 + self.clip_epsilon,
+        )
+
+        clipped = (
+            clipped_ratio * advantages
+        )
+
+        policy_loss = -torch.min(
+            unclipped,
+            clipped,
+        ).mean()
+
+        clip_fraction = (
+            (torch.abs(ratio - 1.0) > self.clip_epsilon)
+            .float()
+            .mean()
+        )
+
+        return (
+            policy_loss,
+            clip_fraction,
+        )
+
+    def compute_value_loss(
+        self,
+        values: Tensor,
+        returns: Tensor,
+    ) -> Tensor:
+        """Calculate value-function MSE loss."""
+
+        return 0.5 * (
+            values - returns
+        ).pow(2).mean()
+
+    # =========================================================
+    # MINIBATCH INDICES
+    # =========================================================
+
+    def _make_minibatches(
+        self,
+        num_samples: int,
+        device: torch.device,
+    ) -> list[Tensor]:
+
+        indices = torch.randperm(
+            num_samples,
+            device=device,
+        )
+
+        if self.minibatch_size is None:
+            return [indices]
+
+        return list(
+            indices.split(
+                self.minibatch_size
+            )
+        )
+
+    # =========================================================
+    # MODEL EVALUATION
+    # =========================================================
+
+    def _evaluate_transition(
+        self,
+        transition,
+    ) -> tuple[Tensor, Tensor, Tensor]:
+        """
+        Re-evaluate one transition using the current model.
+
+        The model is expected to expose:
+
+            evaluate_action(...)
+
+        returning:
+
+            new_log_prob
+            entropy
+            value
+
+        This adapter intentionally lives here so that the PPO
+        algorithm remains independent from the environment.
+        """
+
+        if not hasattr(
+            self.model,
+            "evaluate_action",
+        ):
+            raise AttributeError(
+                "PPO model must implement "
+                "evaluate_action(transition)."
+            )
+
+        result = self.model.evaluate_action(
+            transition
+        )
+
+        if len(result) != 3:
+            raise ValueError(
+                "evaluate_action() must return "
+                "(log_prob, entropy, value)."
+            )
+
+        new_log_prob, entropy, value = result
+
+        return (
+            new_log_prob,
+            entropy,
+            value,
+        )
+
+    # =========================================================
+    # UPDATE
+    # =========================================================
+
+    def update(
+        self,
+        rollout,
+        advantages: Tensor,
+        returns: Tensor,
+    ) -> PPOUpdateStats:
+        """
+        Perform a complete PPO update.
+
+        GAE must already have been computed before calling this.
+
+        Returns:
+            PPOUpdateStats
+        """
+
+        if not isinstance(
+            advantages,
+            Tensor,
+        ):
+            advantages = torch.as_tensor(
+                advantages,
+                dtype=torch.float32,
+            )
+
+        if not isinstance(
+            returns,
+            Tensor,
+        ):
+            returns = torch.as_tensor(
+                returns,
+                dtype=torch.float32,
+            )
+
+        device = next(
+            self.model.parameters()
+        ).device
+
+        advantages = advantages.to(device)
+        returns = returns.to(device)
+
+        old_log_probs = self._prepare_batch(
+            rollout,
+            advantages,
+            returns,
+        )
+
+        old_log_probs = old_log_probs.to(device)
+
+        # -----------------------------------------------------
+        # Normalize advantages.
+        # -----------------------------------------------------
+
+        if len(advantages) > 1:
+            advantages = (
+                advantages - advantages.mean()
+            ) / (
+                advantages.std(unbiased=False)
+                + 1e-8
+            )
+
+        num_samples = len(
+            advantages
+        )
+
+        total_policy_loss = 0.0
+        total_value_loss = 0.0
+        total_entropy = 0.0
+        total_loss = 0.0
+        total_kl = 0.0
+        total_clip_fraction = 0.0
+        total_grad_norm = 0.0
+
+        update_count = 0
+
+        # -----------------------------------------------------
+        # PPO epochs.
+        # -----------------------------------------------------
+
+        for _ in range(self.ppo_epochs):
+
+            minibatches = self._make_minibatches(
+                num_samples,
+                device,
+            )
+
+            for indices in minibatches:
+
+                batch_transitions = [
+                    rollout[int(index)]
+                    for index in indices
+                ]
+
+                new_log_probs = []
+                entropies = []
+                values = []
+
+                for transition in batch_transitions:
+
+                    (
+                        new_log_prob,
+                        entropy,
+                        value,
+                    ) = self._evaluate_transition(
+                        transition
+                    )
+
+                    new_log_probs.append(
+                        new_log_prob
+                    )
+
+                    entropies.append(
+                        entropy
+                    )
+
+                    values.append(
+                        value
+                    )
+
+                new_log_probs = torch.stack(
+                    new_log_probs
+                )
+
+                entropies = torch.stack(
+                    entropies
+                )
+
+                values = torch.stack(
+                    values
+                ).reshape(-1)
+
+                batch_old_log_probs = (
+                    old_log_probs[indices]
+                )
+
+                batch_advantages = (
+                    advantages[indices]
+                )
+
+                batch_returns = (
+                    returns[indices]
+                )
+
+                # -------------------------------------------------
+                # Policy loss
+                # -------------------------------------------------
+
+                policy_loss, clip_fraction = (
+                    self.compute_policy_loss(
+                        new_log_probs,
+                        batch_old_log_probs,
+                        batch_advantages,
+                    )
+                )
+
+                # -------------------------------------------------
+                # Value loss
+                # -------------------------------------------------
+
+                value_loss = (
+                    self.compute_value_loss(
+                        values,
+                        batch_returns,
+                    )
+                )
+
+                # -------------------------------------------------
+                # Entropy
+                # -------------------------------------------------
+
+                entropy = entropies.mean()
+
+                # -------------------------------------------------
+                # Total PPO objective
+                # -------------------------------------------------
+
+                loss = (
+                    policy_loss
+                    + self.value_coef * value_loss
+                    - self.entropy_coef * entropy
+                )
+
+                self.optimizer.zero_grad(
+                    set_to_none=True
+                )
+
+                loss.backward()
+
+                grad_norm = torch.nn.utils.clip_grad_norm_(
+                    self.model.parameters(),
+                    self.max_grad_norm,
+                )
+
+                self.optimizer.step()
+
+                # -------------------------------------------------
+                # Diagnostics
+                # -------------------------------------------------
+
+                with torch.no_grad():
+
+                    log_ratio = (
+                        new_log_probs
+                        - batch_old_log_probs
+                    )
+
+                    approx_kl = (
+                        0.5
+                        * log_ratio.pow(2)
+                    ).mean()
+
+                total_policy_loss += (
+                    policy_loss.detach().item()
+                )
+
+                total_value_loss += (
+                    value_loss.detach().item()
+                )
+
+                total_entropy += (
+                    entropy.detach().item()
+                )
+
+                total_loss += (
+                    loss.detach().item()
+                )
+
+                total_kl += (
+                    approx_kl.detach().item()
+                )
+
+                total_clip_fraction += (
+                    clip_fraction.detach().item()
+                )
+
+                total_grad_norm += (
+                    float(grad_norm)
+                )
+
+                update_count += 1
+
+        if update_count == 0:
+            raise RuntimeError(
+                "PPO update produced zero optimization steps."
+            )
+
+        return PPOUpdateStats(
+            policy_loss=(
+                total_policy_loss
+                / update_count
+            ),
+            value_loss=(
+                total_value_loss
+                / update_count
+            ),
+            entropy=(
+                total_entropy
+                / update_count
+            ),
+            total_loss=(
+                total_loss
+                / update_count
+            ),
+            approx_kl=(
+                total_kl
+                / update_count
+            ),
+            clip_fraction=(
+                total_clip_fraction
+                / update_count
+            ),
+            grad_norm=(
+                total_grad_norm
+                / update_count
+            ),
+            num_epochs=self.ppo_epochs,
+            num_samples=num_samples,
+        )
+===== src/training/gae.py =====
+from dataclasses import dataclass
+
+import torch
+
+
+@dataclass
+class AdvantageBatch:
+    """
+    Computed learning targets for one rollout.
+    """
+
+    advantages: torch.Tensor
+    returns: torch.Tensor
+
+
+def compute_gae(
+    rewards: torch.Tensor,
+    values: torch.Tensor,
+    next_values: torch.Tensor,
+    dones: torch.Tensor,
+    gamma: float = 0.99,
+    gae_lambda: float = 0.95,
+    normalize: bool = False,
+) -> AdvantageBatch:
+    """
+    Compute Generalized Advantage Estimation (GAE).
+
+    Parameters
+    ----------
+    rewards:
+        Reward at each timestep.
+        Shape: [T]
+
+    values:
+        V(s_t) for each timestep.
+        Shape: [T]
+
+    next_values:
+        V(s_{t+1}) for each timestep.
+        Shape: [T]
+
+    dones:
+        1.0 where the transition terminates the episode,
+        otherwise 0.0.
+        Shape: [T]
+
+    gamma:
+        Discount factor.
+
+    gae_lambda:
+        GAE smoothing parameter.
+
+    normalize:
+        Whether to normalize advantages across the rollout.
+
+    Returns
+    -------
+    AdvantageBatch
+        advantages:
+            GAE advantage estimate A_t
+
+        returns:
+            critic targets R_t = A_t + V(s_t)
+    """
+
+    if rewards.ndim != 1:
+        raise ValueError("rewards must have shape [T].")
+
+    if values.ndim != 1:
+        raise ValueError("values must have shape [T].")
+
+    if next_values.ndim != 1:
+        raise ValueError("next_values must have shape [T].")
+
+    if dones.ndim != 1:
+        raise ValueError("dones must have shape [T].")
+
+    if not (
+        len(rewards)
+        == len(values)
+        == len(next_values)
+        == len(dones)
+    ):
+        raise ValueError(
+            "rewards, values, next_values, and dones "
+            "must have the same length."
+        )
+
+    if not 0.0 <= gamma <= 1.0:
+        raise ValueError("gamma must be in [0, 1].")
+
+    if not 0.0 <= gae_lambda <= 1.0:
+        raise ValueError("gae_lambda must be in [0, 1].")
+
+    T = len(rewards)
+
+    advantages = torch.zeros_like(rewards)
+
+    gae = torch.zeros(
+        (),
+        dtype=rewards.dtype,
+        device=rewards.device,
+    )
+
+    for t in reversed(range(T)):
+
+        non_terminal = 1.0 - dones[t]
+
+        delta = (
+            rewards[t]
+            + gamma * next_values[t] * non_terminal
+            - values[t]
+        )
+
+        gae = (
+            delta
+            + gamma
+            * gae_lambda
+            * non_terminal
+            * gae
+        )
+
+        advantages[t] = gae
+
+    returns = advantages + values
+
+    if normalize and T > 1:
+        mean = advantages.mean()
+        std = advantages.std(unbiased=False)
+
+        if std > 1e-8:
+            advantages = (
+                advantages - mean
+            ) / (std + 1e-8)
+
+    return AdvantageBatch(
+        advantages=advantages,
+        returns=returns,
+    )
+===== src/training/rollout_buffer.py =====
+from dataclasses import dataclass
+from typing import Optional
+
+import torch
+
+from src.controller.controller import ControllerPhase
+from src.environment.actions import Action
+from src.environment.state import SCBState
+from src.models.scb_encoder import SCBEncoderOutput
+
+
+@dataclass
+class RolloutTransition:
+    """
+    One transition collected during an RL episode.
+
+    This contains everything PPO needs from the interaction phase.
+    """
+
+    state: SCBState
+    action: Action
+    action_index: int
+
+    reward: float
+
+    next_state: SCBState
+
+    done: bool
+
+    log_prob: torch.Tensor
+    entropy: torch.Tensor
+
+    phase: ControllerPhase
+
+    # Keep the encoder output associated with this state.
+    #
+    # This is useful during the initial implementation/debugging
+    # stage and makes the collected trajectory self-contained.
+    encoder_output: Optional[SCBEncoderOutput] = None
+
+
+class RolloutBuffer:
+    """
+    Stores transitions collected during RL interaction.
+
+    The buffer is deliberately policy-aware because the system
+    contains three separate policies:
+
+        VALIDITY
+        MINIMIZATION
+        GLOBAL_EXPLORATION
+
+    The buffer does NOT:
+        - calculate rewards
+        - calculate advantages
+        - calculate returns
+        - perform PPO updates
+
+    Those belong to the PPO training layer.
+    """
+
+    def __init__(self):
+        self.transitions: list[RolloutTransition] = []
+
+    # ---------------------------------------------------------
+    # ADD
+    # ---------------------------------------------------------
+
+    def add(
+        self,
+        *,
+        state: SCBState,
+        action: Action,
+        action_index: int,
+        reward: float,
+        next_state: SCBState,
+        done: bool,
+        log_prob: torch.Tensor,
+        entropy: torch.Tensor,
+        phase: ControllerPhase,
+        encoder_output: Optional[SCBEncoderOutput] = None,
+    ) -> None:
+
+        transition = RolloutTransition(
+            state=state.copy(),
+            action=action,
+            action_index=int(action_index),
+            reward=float(reward),
+            next_state=next_state.copy(),
+            done=bool(done),
+            log_prob=log_prob.detach().clone(),
+            entropy=entropy.detach().clone(),
+            phase=phase,
+            encoder_output=encoder_output,
+        )
+
+        self.transitions.append(transition)
+
+    # ---------------------------------------------------------
+    # BASIC ACCESS
+    # ---------------------------------------------------------
+
+    def __len__(self) -> int:
+        return len(self.transitions)
+
+    def __getitem__(self, index: int) -> RolloutTransition:
+        return self.transitions[index]
+
+    # ---------------------------------------------------------
+    # CLEAR
+    # ---------------------------------------------------------
+
+    def clear(self) -> None:
+        self.transitions.clear()
+
+    # ---------------------------------------------------------
+    # POLICY FILTERING
+    # ---------------------------------------------------------
+
+    def by_phase(
+        self,
+        phase: ControllerPhase,
+    ) -> list[RolloutTransition]:
+
+        return [
+            transition
+            for transition in self.transitions
+            if transition.phase == phase
+        ]
+
+    def validity_transitions(
+        self,
+    ) -> list[RolloutTransition]:
+
+        return self.by_phase(
+            ControllerPhase.VALIDITY
+        )
+
+    def minimization_transitions(
+        self,
+    ) -> list[RolloutTransition]:
+
+        transitions = []
+
+        for transition in self.transitions:
+
+            if transition.phase in (
+                ControllerPhase.MINIMIZATION,
+                ControllerPhase.LOCAL_RETRY,
+            ):
+                transitions.append(
+                    transition
+                )
+
+        return transitions
+
+    def global_exploration_transitions(
+        self,
+    ) -> list[RolloutTransition]:
+
+        return self.by_phase(
+            ControllerPhase.GLOBAL_EXPLORATION
+        )
+
+    # ---------------------------------------------------------
+    # SUMMARY
+    # ---------------------------------------------------------
+
+    def summary(self) -> dict:
+
+        return {
+            "total": len(self.transitions),
+            "validity": len(
+                self.validity_transitions()
+            ),
+            "minimization": len(
+                self.minimization_transitions()
+            ),
+            "global_exploration": len(
+                self.global_exploration_transitions()
+            ),
+        }
+===== src/training/training_stats.py =====
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any, Optional
+
+import math
+
+from src.controller.controller import ControllerPhase
+from src.environment.actions import ActionType
+from src.training.rollout_buffer import RolloutTransition
+
+
+@dataclass
+class EpisodeStats:
+    """Statistics collected from one complete RL episode."""
+
+    episode: int
+
+    steps: int = 0
+
+    initial_valid: bool = False
+    final_valid: bool = False
+
+    initial_scb: Optional[float] = None
+    final_scb: Optional[float] = None
+    best_scb: Optional[float] = None
+
+    scb_improvement: Optional[float] = None
+
+    cut_size: int = 0
+    selected_sessions: int = 0
+    separated_sessions: int = 0
+
+    validity_steps: int = 0
+    minimization_steps: int = 0
+    local_retry_steps: int = 0
+    global_exploration_steps: int = 0
+
+    invalid_steps: int = 0
+    valid_steps: int = 0
+
+    stop_actions: int = 0
+
+    add_edge_actions: int = 0
+    remove_edge_actions: int = 0
+
+    add_session_actions: int = 0
+    remove_session_actions: int = 0
+
+    reward_sum: float = 0.0
+    reward_mean: float = 0.0
+    reward_min: float = 0.0
+    reward_max: float = 0.0
+
+    mean_entropy: float = 0.0
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "episode": self.episode,
+            "steps": self.steps,
+            "initial_valid": self.initial_valid,
+            "final_valid": self.final_valid,
+            "initial_scb": self.initial_scb,
+            "final_scb": self.final_scb,
+            "best_scb": self.best_scb,
+            "scb_improvement": self.scb_improvement,
+            "cut_size": self.cut_size,
+            "selected_sessions": self.selected_sessions,
+            "separated_sessions": self.separated_sessions,
+            "validity_steps": self.validity_steps,
+            "minimization_steps": self.minimization_steps,
+            "local_retry_steps": self.local_retry_steps,
+            "global_exploration_steps": self.global_exploration_steps,
+            "invalid_steps": self.invalid_steps,
+            "valid_steps": self.valid_steps,
+            "stop_actions": self.stop_actions,
+            "add_edge_actions": self.add_edge_actions,
+            "remove_edge_actions": self.remove_edge_actions,
+            "add_session_actions": self.add_session_actions,
+            "remove_session_actions": self.remove_session_actions,
+            "reward_sum": self.reward_sum,
+            "reward_mean": self.reward_mean,
+            "reward_min": self.reward_min,
+            "reward_max": self.reward_max,
+            "mean_entropy": self.mean_entropy,
+        }
+
+
+@dataclass
+class TrainingStats:
+    """
+    Aggregates episode statistics across PPO training.
+
+    This class is deliberately independent of PPO optimization.
+    It only observes the rollout and reports what happened.
+    """
+
+    history: list[EpisodeStats] = field(default_factory=list)
+
+    # ---------------------------------------------------------
+    # EPISODE
+    # ---------------------------------------------------------
+
+    def record_episode(
+        self,
+        episode: int,
+        transitions: list[RolloutTransition],
+    ) -> EpisodeStats:
+
+        if not transitions:
+            stats = EpisodeStats(
+                episode=episode,
+            )
+
+            self.history.append(stats)
+
+            return stats
+
+        first = transitions[0]
+        last = transitions[-1]
+
+        stats = EpisodeStats(
+            episode=episode,
+            steps=len(transitions),
+            initial_valid=bool(first.state.valid),
+            final_valid=bool(last.next_state.valid),
+            initial_scb=first.state.scb,
+            final_scb=last.next_state.scb,
+        )
+
+        # -----------------------------------------------------
+        # SCB
+        # -----------------------------------------------------
+
+        scbs = []
+
+        for transition in transitions:
+
+            if transition.state.scb is not None:
+                scbs.append(
+                    float(transition.state.scb)
+                )
+
+            if transition.next_state.scb is not None:
+                scbs.append(
+                    float(transition.next_state.scb)
+                )
+
+        if scbs:
+            stats.best_scb = min(scbs)
+
+        if (
+            stats.initial_scb is not None
+            and stats.best_scb is not None
+        ):
+            stats.scb_improvement = (
+                stats.initial_scb
+                - stats.best_scb
+            )
+
+        # -----------------------------------------------------
+        # PHASES
+        # -----------------------------------------------------
+
+        for transition in transitions:
+
+            if transition.phase == ControllerPhase.VALIDITY:
+                stats.validity_steps += 1
+
+            elif transition.phase == ControllerPhase.MINIMIZATION:
+                stats.minimization_steps += 1
+
+            elif transition.phase == ControllerPhase.LOCAL_RETRY:
+                stats.local_retry_steps += 1
+
+            elif transition.phase == ControllerPhase.GLOBAL_EXPLORATION:
+                stats.global_exploration_steps += 1
+
+        # -----------------------------------------------------
+        # VALIDITY
+        # -----------------------------------------------------
+
+        stats.valid_steps = sum(
+            int(t.next_state.valid)
+            for t in transitions
+        )
+
+        stats.invalid_steps = (
+            stats.steps
+            - stats.valid_steps
+        )
+
+        # -----------------------------------------------------
+        # FINAL CANDIDATE
+        # -----------------------------------------------------
+
+        final_state = last.next_state
+
+        stats.cut_size = (
+            final_state.candidate.num_cut_edges
+        )
+
+        stats.selected_sessions = (
+            final_state.candidate.num_selected_sessions
+        )
+
+        separated = final_state.separated_sessions
+
+        if isinstance(separated, int):
+            stats.separated_sessions = separated
+        else:
+            stats.separated_sessions = len(
+                separated
+            )
+
+        # -----------------------------------------------------
+        # ACTIONS
+        # -----------------------------------------------------
+
+        for transition in transitions:
+
+            action_type = (
+                transition.action.action_type
+            )
+
+            if action_type == ActionType.ADD_EDGE:
+                stats.add_edge_actions += 1
+
+            elif action_type == ActionType.REMOVE_EDGE:
+                stats.remove_edge_actions += 1
+
+            elif action_type == ActionType.ADD_SESSION:
+                stats.add_session_actions += 1
+
+            elif action_type == ActionType.REMOVE_SESSION:
+                stats.remove_session_actions += 1
+
+            elif action_type == ActionType.STOP:
+                stats.stop_actions += 1
+
+        # -----------------------------------------------------
+        # REWARDS
+        # -----------------------------------------------------
+
+        rewards = [
+            float(t.reward)
+            for t in transitions
+        ]
+
+        if rewards:
+            stats.reward_sum = sum(rewards)
+            stats.reward_mean = (
+                stats.reward_sum / len(rewards)
+            )
+            stats.reward_min = min(rewards)
+            stats.reward_max = max(rewards)
+
+        # -----------------------------------------------------
+        # ENTROPY
+        # -----------------------------------------------------
+
+        entropies = []
+
+        for transition in transitions:
+
+            if transition.entropy is None:
+                continue
+
+            value = float(
+                transition.entropy.detach().cpu().item()
+            )
+
+            if math.isfinite(value):
+                entropies.append(value)
+
+        if entropies:
+            stats.mean_entropy = (
+                sum(entropies)
+                / len(entropies)
+            )
+
+        self.history.append(stats)
+
+        return stats
+
+    # ---------------------------------------------------------
+    # RECENT
+    # ---------------------------------------------------------
+
+    def recent(
+        self,
+        n: int = 10,
+    ) -> list[EpisodeStats]:
+
+        if n <= 0:
+            return []
+
+        return self.history[-n:]
+
+    # ---------------------------------------------------------
+    # SUMMARY
+    # ---------------------------------------------------------
+
+    def summary(
+        self,
+        n: Optional[int] = None,
+    ) -> dict[str, float]:
+
+        episodes = (
+            self.history
+            if n is None
+            else self.recent(n)
+        )
+
+        if not episodes:
+            return {}
+
+        def mean(
+            values: list[float],
+        ) -> float:
+
+            if not values:
+                return 0.0
+
+            return sum(values) / len(values)
+
+        improvements = [
+            float(x.scb_improvement)
+            for x in episodes
+            if x.scb_improvement is not None
+        ]
+
+        best_scbs = [
+            float(x.best_scb)
+            for x in episodes
+            if x.best_scb is not None
+        ]
+
+        final_scbs = [
+            float(x.final_scb)
+            for x in episodes
+            if x.final_scb is not None
+        ]
+
+        return {
+            "episodes": float(len(episodes)),
+
+            "validity_rate": mean([
+                float(x.final_valid)
+                for x in episodes
+            ]),
+
+            "mean_steps": mean([
+                float(x.steps)
+                for x in episodes
+            ]),
+
+            "mean_best_scb": mean(best_scbs),
+
+            "mean_final_scb": mean(final_scbs),
+
+            "mean_scb_improvement": mean(
+                improvements
+            ),
+
+            "mean_cut_size": mean([
+                float(x.cut_size)
+                for x in episodes
+            ]),
+
+            "mean_reward": mean([
+                x.reward_mean
+                for x in episodes
+            ]),
+
+            "mean_entropy": mean([
+                x.mean_entropy
+                for x in episodes
+            ]),
+        }
+
+    # ---------------------------------------------------------
+    # PRINT
+    # ---------------------------------------------------------
+
+    @staticmethod
+    def print_episode(
+        stats: EpisodeStats,
+    ) -> None:
+
+        def fmt(value):
+            if value is None:
+                return "--"
+
+            if isinstance(value, float):
+                return f"{value:.4f}"
+
+            return str(value)
+
+        print()
+        print(
+            f"EPISODE {stats.episode}"
+        )
+        print("─" * 54)
+
+        print(
+            f"Steps        : {stats.steps}"
+        )
+
+        print(
+            f"Phase        : "
+            f"V={stats.validity_steps} "
+            f"M={stats.minimization_steps} "
+            f"L={stats.local_retry_steps} "
+            f"G={stats.global_exploration_steps}"
+        )
+
+        print(
+            f"Valid        : "
+            f"{stats.initial_valid} → "
+            f"{stats.final_valid}"
+        )
+
+        print(
+            f"SCB          : "
+            f"{fmt(stats.initial_scb)} → "
+            f"{fmt(stats.best_scb)} → "
+            f"{fmt(stats.final_scb)}"
+        )
+
+        print(
+            f"Improvement  : "
+            f"{fmt(stats.scb_improvement)}"
+        )
+
+        print(
+            f"Cut          : "
+            f"{stats.cut_size} edges"
+        )
+
+        print(
+            f"Sessions     : "
+            f"{stats.selected_sessions} selected, "
+            f"{stats.separated_sessions} separated"
+        )
+
+        print(
+            f"Actions      : "
+            f"+E={stats.add_edge_actions} "
+            f"-E={stats.remove_edge_actions} "
+            f"+S={stats.add_session_actions} "
+            f"-S={stats.remove_session_actions} "
+            f"STOP={stats.stop_actions}"
+        )
+
+        print(
+            f"Reward       : "
+            f"sum={stats.reward_sum:.4f} "
+            f"mean={stats.reward_mean:.4f}"
+        )
+
+        print(
+            f"Entropy      : "
+            f"{stats.mean_entropy:.4f}"
+        )
+
+        print("─" * 54)
+
+    def print_summary(
+        self,
+        n: Optional[int] = None,
+    ) -> None:
+
+        summary = self.summary(n)
+
+        if not summary:
+            print("No training statistics recorded.")
+            return
+
+        print()
+        print("PPO TRAINING SUMMARY")
+        print("═" * 54)
+
+        print(
+            f"Episodes       : "
+            f"{int(summary['episodes'])}"
+        )
+
+        print(
+            f"Validity rate  : "
+            f"{summary['validity_rate'] * 100:.2f}%"
+        )
+
+        print(
+            f"Mean steps     : "
+            f"{summary['mean_steps']:.2f}"
+        )
+
+        print(
+            f"Mean best SCB  : "
+            f"{summary['mean_best_scb']:.4f}"
+        )
+
+        print(
+            f"Mean final SCB : "
+            f"{summary['mean_final_scb']:.4f}"
+        )
+
+        print(
+            f"Mean ΔSCB      : "
+            f"{summary['mean_scb_improvement']:.4f}"
+        )
+
+        print(
+            f"Mean cut size  : "
+            f"{summary['mean_cut_size']:.2f}"
+        )
+
+        print(
+            f"Mean reward    : "
+            f"{summary['mean_reward']:.4f}"
+        )
+
+        print(
+            f"Mean entropy   : "
+            f"{summary['mean_entropy']:.4f}"
+        )
+
+        print("═" * 54)
+===== tests/test_validity_learning.py =====
+import random
+import sys
+from pathlib import Path
+
+import torch
+import torch.nn as nn
+
+from src.controller.controller import ControllerPhase
+from src.data.graph_loader import GraphDataset
+from src.scb.problem import SCBProblem
+from src.environment.environment import SCBEnvironment
+from src.models.scb_encoder import SCBEncoder
+from src.models.policies import ValidityPolicy
+from src.models.value_head import SCBValueHead
+from src.training.rollout_buffer import RolloutBuffer
+from src.training.advantages import compute_gae
+from src.training.ppo_updater import PPOUpdater
+
+
+# ============================================================
+# CONFIG
+# ============================================================
+
+DATASET_PATH = "data/raw/labelled_dataset.pkl"
+
+SEED = 42
+
+MAX_NODES = 12
+MAX_SESSIONS = 6
+
+NUM_TRAIN_GRAPHS = 20
+NUM_TEST_GRAPHS = 10
+
+TRAIN_EPISODES = 2000
+MAX_STEPS = 30
+
+EVAL_EPISODES = 100
+PRINT_EVERY = 100
+
+LEARNING_RATE = 3e-4
+PPO_EPOCHS = 4
+
+GAMMA = 0.99
+GAE_LAMBDA = 0.95
+
+HIDDEN_DIM = 32
+ACTION_EMBEDDING_DIM = 16
+SCORER_HIDDEN_DIM = 32
+
+
+# ============================================================
+# REPRODUCIBILITY
+# ============================================================
+
+random.seed(SEED)
+torch.manual_seed(SEED)
+
+
+# ============================================================
+# OUTPUT LOGGING
+# ============================================================
+
+OUTPUT_DIR = Path("tests/output")
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+OUTPUT_FILE = OUTPUT_DIR / "validity_learning.txt"
+
+
+class ValidityTestEnvironment(SCBEnvironment):
+
+    @staticmethod
+    def _normalize_state(state):
+        state.separated_sessions = len(
+            state.separated_sessions
+        )
+        return state
+
+    def reset(self, selected_sessions=None):
+        state = super().reset(
+            selected_sessions
+        )
+
+        state = self._normalize_state(state)
+
+        self.state = state
+
+        return state.copy()
+
+    def step(self, action):
+        state, reward, done, info = super().step(
+            action
+        )
+
+        state = self._normalize_state(state)
+
+        self.state = state
+
+        return state, reward, done, info
+
+
+class Tee:
+    """Print to terminal and save the same output to a file."""
+
+    def __init__(self, path):
+        self.file = open(
+            path,
+            "w",
+            encoding="utf-8",
+        )
+
+    def write(self, text):
+        sys.__stdout__.write(text)
+        self.file.write(text)
+        self.file.flush()
+
+    def flush(self):
+        sys.__stdout__.flush()
+        self.file.flush()
+
+    def close(self):
+        self.file.close()
+
+
+# ============================================================
+# PPO MODEL ADAPTER
+# ============================================================
+
+class ValidityPPOModel(nn.Module):
+    """
+    Test model combining:
+
+        SCBEncoder
+            +
+        ValidityPolicy
+            +
+        SCBValueHead
+
+    PPOUpdater interacts with this through evaluate_action().
+    """
+
+    def __init__(
+        self,
+        encoder,
+        policy,
+        value_head,
+    ):
+        super().__init__()
+
+        self.encoder = encoder
+        self.policy = policy
+        self.value_head = value_head
+
+        self._problem = None
+
+    def set_problem(self, problem):
+        self._problem = problem
+
+    def evaluate_action(self, transition):
+
+        if self._problem is None:
+            raise RuntimeError(
+                "ValidityPPOModel has no active SCBProblem."
+            )
+
+        state = transition.state
+
+        encoder_output = self.encoder(
+            self._problem,
+            state,
+        )
+
+        action_logits = self.policy.scorer(
+            encoder_output
+        )
+
+        flat_logits = self.policy._build_flat_logits(
+            action_logits,
+            self._problem.num_edges,
+            self._problem.num_sessions,
+        )
+
+        mask = self.policy._build_action_mask(
+            self._problem,
+            state,
+        )
+
+        masked_logits = self.policy._apply_mask(
+            flat_logits,
+            mask,
+        )
+
+        distribution = torch.distributions.Categorical(
+            logits=masked_logits
+        )
+
+        action_index = torch.tensor(
+            transition.action_index,
+            device=masked_logits.device,
+            dtype=torch.long,
+        )
+
+        new_log_prob = distribution.log_prob(
+            action_index
+        )
+
+        entropy = distribution.entropy()
+
+        value = self.value_head(
+            encoder_output.global_embedding
+        )
+
+        return (
+            new_log_prob,
+            entropy,
+            value.squeeze(),
+        )
+
+
+# ============================================================
+# SMALL GRAPH SELECTION
+# ============================================================
+
+def select_small_graphs(dataset):
+
+    candidates = []
+
+    for index in range(len(dataset)):
+
+        graph = dataset.graph(index)
+
+        if graph.num_nodes > MAX_NODES:
+            continue
+
+        if graph.num_sessions > MAX_SESSIONS:
+            continue
+
+        candidates.append(
+            (
+                index,
+                graph.num_nodes,
+                graph.num_edges,
+                graph.num_sessions,
+            )
+        )
+
+    required = (
+        NUM_TRAIN_GRAPHS
+        + NUM_TEST_GRAPHS
+    )
+
+    if len(candidates) < required:
+        raise RuntimeError(
+            "Not enough small graphs in dataset.\n"
+            f"Found : {len(candidates)}\n"
+            f"Need  : {required}\n"
+            f"MAX_NODES={MAX_NODES}\n"
+            f"MAX_SESSIONS={MAX_SESSIONS}"
+        )
+
+    random.shuffle(candidates)
+
+    train = candidates[:NUM_TRAIN_GRAPHS]
+
+    test = candidates[
+        NUM_TRAIN_GRAPHS:
+        NUM_TRAIN_GRAPHS + NUM_TEST_GRAPHS
+    ]
+
+    return train, test
+
+
+# ============================================================
+# ENVIRONMENT
+# ============================================================
+
+def make_environment(graph):
+
+    problem = SCBProblem.from_graph(graph)
+
+    environment = ValidityTestEnvironment(
+        problem=problem,
+        mode=SCBEnvironment.VALIDITY_MODE,
+    )
+    return environment, problem
+
+
+# ============================================================
+# ROLLOUT
+# ============================================================
+
+def collect_rollout(
+    model,
+    graph,
+    max_steps=MAX_STEPS,
+):
+
+    environment, problem = make_environment(graph)
+
+    model.set_problem(problem)
+
+    state = environment.reset()
+
+    buffer = RolloutBuffer()
+
+    reached_valid = bool(state.valid)
+
+    steps_to_valid = (
+        0
+        if reached_valid
+        else None
+    )
+
+    total_reward = 0.0
+
+    for step in range(max_steps):
+
+        encoder_output = model.encoder(
+            problem,
+            state,
+        )
+
+        policy_output = model.policy(
+            encoder_output=encoder_output,
+            problem=problem,
+            state=state,
+            deterministic=False,
+        )
+
+        action = policy_output.action
+
+        next_state, reward, done, info = (
+            environment.step(action)
+        )
+
+        total_reward += float(reward)
+
+        if (
+            not reached_valid
+            and next_state.valid
+        ):
+            reached_valid = True
+            steps_to_valid = step + 1
+
+        buffer.add(
+            state=state,
+            action=action,
+            action_index=policy_output.action_index,
+            reward=float(reward),
+            next_state=next_state,
+            done=bool(done),
+            log_prob=policy_output.log_prob,
+            entropy=policy_output.entropy,
+            phase=ControllerPhase.VALIDITY,
+            encoder_output=encoder_output,
+        )
+
+        state = next_state
+
+        if done:
+            break
+
+    return (
+        buffer,
+        reached_valid,
+        steps_to_valid,
+        total_reward,
+        state,
+        problem,
+    )
+
+
+# ============================================================
+# GAE TARGETS
+# ============================================================
+
+def compute_rollout_targets(
+    model,
+    rollout,
+    problem,
+):
+
+    transitions = rollout.transitions
+
+    if not transitions:
+        raise RuntimeError(
+            "Cannot compute GAE for empty rollout."
+        )
+
+    values = []
+    next_values = []
+    rewards = []
+    dones = []
+
+    for transition in transitions:
+
+        state_output = model.encoder(
+            problem,
+            transition.state,
+        )
+
+        next_output = model.encoder(
+            problem,
+            transition.next_state,
+        )
+
+        value = model.value_head(
+            state_output.global_embedding
+        )
+
+        next_value = model.value_head(
+            next_output.global_embedding
+        )
+
+        values.append(value.squeeze())
+        next_values.append(next_value.squeeze())
+
+        rewards.append(
+            float(transition.reward)
+        )
+
+        dones.append(
+            float(transition.done)
+        )
+
+    values = torch.stack(values)
+    next_values = torch.stack(next_values)
+
+    rewards = torch.tensor(
+        rewards,
+        dtype=torch.float32,
+        device=values.device,
+    )
+
+    dones = torch.tensor(
+        dones,
+        dtype=torch.float32,
+        device=values.device,
+    )
+
+    gae = compute_gae(
+        rewards=rewards,
+        values=values.detach(),
+        next_values=next_values.detach(),
+        dones=dones,
+        gamma=GAMMA,
+        gae_lambda=GAE_LAMBDA,
+        normalize=True,
+    )
+
+    return gae
+
+
+# ============================================================
+# EVALUATION
+# ============================================================
+
+@torch.no_grad()
+def evaluate(
+    model,
+    graphs,
+):
+
+    model.eval()
+
+    successes = 0
+    successful_steps = []
+
+    for _ in range(EVAL_EPISODES):
+
+        graph = random.choice(graphs)
+
+        environment, problem = (
+            make_environment(graph)
+        )
+
+        model.set_problem(problem)
+
+        state = environment.reset()
+
+        if state.valid:
+            successes += 1
+            successful_steps.append(0)
+            continue
+
+        for step in range(MAX_STEPS):
+
+            encoder_output = model.encoder(
+                problem,
+                state,
+            )
+
+            policy_output = model.policy(
+                encoder_output=encoder_output,
+                problem=problem,
+                state=state,
+                deterministic=True,
+            )
+
+            state, reward, done, info = (
+                environment.step(
+                    policy_output.action
+                )
+            )
+
+            if state.valid:
+
+                successes += 1
+
+                successful_steps.append(
+                    step + 1
+                )
+
+                break
+
+            if done:
+                break
+
+    model.train()
+
+    validity_rate = (
+        successes / EVAL_EPISODES
+    )
+
+    mean_steps = (
+        sum(successful_steps)
+        / len(successful_steps)
+        if successful_steps
+        else float("inf")
+    )
+
+    return (
+        validity_rate,
+        mean_steps,
+    )
+
+
+# ============================================================
+# TRAINING
+# ============================================================
+
+def run_experiment():
+
+    tee = Tee(OUTPUT_FILE)
+
+    original_stdout = sys.stdout
+    sys.stdout = tee
+
+    try:
+
+        print()
+        print("=" * 78)
+        print(
+            "SCB VALIDITY POLICY PPO LEARNING EXPERIMENT"
+        )
+        print("=" * 78)
+
+        print()
+        print("CONFIGURATION")
+        print("-" * 78)
+
+        print(
+            f"Dataset              : "
+            f"{DATASET_PATH}"
+        )
+
+        print(
+            f"Maximum nodes        : "
+            f"{MAX_NODES}"
+        )
+
+        print(
+            f"Maximum sessions     : "
+            f"{MAX_SESSIONS}"
+        )
+
+        print(
+            f"Training graphs      : "
+            f"{NUM_TRAIN_GRAPHS}"
+        )
+
+        print(
+            f"Held-out test graphs : "
+            f"{NUM_TEST_GRAPHS}"
+        )
+
+        print(
+            f"Training episodes    : "
+            f"{TRAIN_EPISODES}"
+        )
+
+        print(
+            f"Max steps / episode  : "
+            f"{MAX_STEPS}"
+        )
+
+        print(
+            f"Learning rate        : "
+            f"{LEARNING_RATE}"
+        )
+
+        print(
+            f"PPO epochs           : "
+            f"{PPO_EPOCHS}"
+        )
+
+        # ----------------------------------------------------
+        # DATASET
+        # ----------------------------------------------------
+
+        dataset = GraphDataset(
+            DATASET_PATH
+        )
+
+        train_graphs, test_graphs = (
+            select_small_graphs(dataset)
+        )
+
+        print()
+        print("TRAIN GRAPHS")
+        print("-" * 78)
+
+        for (
+            index,
+            nodes,
+            edges,
+            sessions,
+        ) in train_graphs:
+
+            print(
+                f"index={index:4d} "
+                f"nodes={nodes:2d} "
+                f"edges={edges:3d} "
+                f"sessions={sessions:2d}"
+            )
+
+        print()
+        print("HELD-OUT TEST GRAPHS")
+        print("-" * 78)
+
+        for (
+            index,
+            nodes,
+            edges,
+            sessions,
+        ) in test_graphs:
+
+            print(
+                f"index={index:4d} "
+                f"nodes={nodes:2d} "
+                f"edges={edges:3d} "
+                f"sessions={sessions:2d}"
+            )
+
+        train_graph_objects = [
+            dataset.graph(item[0])
+            for item in train_graphs
+        ]
+
+        test_graph_objects = [
+            dataset.graph(item[0])
+            for item in test_graphs
+        ]
+
+        # ----------------------------------------------------
+        # MODEL
+        # ----------------------------------------------------
+
+        encoder = SCBEncoder(
+            hidden_dim=HIDDEN_DIM,
+            topology_layers=2,
+            session_layers=1,
+        )
+
+        policy = ValidityPolicy(
+            hidden_dim=HIDDEN_DIM,
+            action_embedding_dim=(
+                ACTION_EMBEDDING_DIM
+            ),
+            scorer_hidden_dim=(
+                SCORER_HIDDEN_DIM
+            ),
+        )
+
+        value_head = SCBValueHead(
+            hidden_dim=HIDDEN_DIM,
+            value_hidden_dim=HIDDEN_DIM,
+        )
+
+        model = ValidityPPOModel(
+            encoder=encoder,
+            policy=policy,
+            value_head=value_head,
+        )
+
+        updater = PPOUpdater(
+            model=model,
+            learning_rate=LEARNING_RATE,
+            ppo_epochs=PPO_EPOCHS,
+            minibatch_size=None,
+        )
+
+        # ----------------------------------------------------
+        # BASELINE
+        # ----------------------------------------------------
+
+        print()
+        print("=" * 78)
+        print("BASELINE EVALUATION")
+        print("=" * 78)
+
+        (
+            train_rate_before,
+            train_steps_before,
+        ) = evaluate(
+            model,
+            train_graph_objects,
+        )
+
+        (
+            test_rate_before,
+            test_steps_before,
+        ) = evaluate(
+            model,
+            test_graph_objects,
+        )
+
+        print(
+            f"Train validity rate : "
+            f"{train_rate_before:.3f}"
+        )
+
+        print(
+            f"Train mean steps    : "
+            f"{train_steps_before:.3f}"
+        )
+
+        print(
+            f"Test validity rate  : "
+            f"{test_rate_before:.3f}"
+        )
+
+        print(
+            f"Test mean steps     : "
+            f"{test_steps_before:.3f}"
+        )
+
+        # ----------------------------------------------------
+        # TRAIN
+        # ----------------------------------------------------
+
+        print()
+        print("=" * 78)
+        print("PPO TRAINING")
+        print("=" * 78)
+
+        window_success = []
+        window_steps = []
+        window_rewards = []
+
+        for episode in range(
+            1,
+            TRAIN_EPISODES + 1,
+        ):
+
+            graph_info = random.choice(
+                train_graphs
+            )
+
+            graph = dataset.graph(
+                graph_info[0]
+            )
+
+            (
+                rollout,
+                reached_valid,
+                steps_to_valid,
+                total_reward,
+                final_state,
+                problem,
+            ) = collect_rollout(
+                model,
+                graph,
+                MAX_STEPS,
+            )
+
+            if len(rollout) == 0:
+                continue
+
+            targets = compute_rollout_targets(
+                model,
+                rollout,
+                problem,
+            )
+
+            stats = updater.update(
+                rollout,
+                targets.advantages,
+                targets.returns,
+            )
+
+            window_success.append(
+                float(reached_valid)
+            )
+
+            window_rewards.append(
+                total_reward
+            )
+
+            if steps_to_valid is not None:
+                window_steps.append(
+                    steps_to_valid
+                )
+
+            if episode % PRINT_EVERY == 0:
+
+                validity_rate = (
+                    sum(window_success)
+                    / len(window_success)
+                )
+
+                mean_reward = (
+                    sum(window_rewards)
+                    / len(window_rewards)
+                )
+
+                mean_steps = (
+                    sum(window_steps)
+                    / len(window_steps)
+                    if window_steps
+                    else float("inf")
+                )
+
+                print()
+                print(
+                    f"[EPISODES "
+                    f"{episode - PRINT_EVERY + 1}-"
+                    f"{episode}]"
+                )
+
+                print(
+                    f"  Rollout validity : "
+                    f"{validity_rate:.3f}"
+                )
+
+                print(
+                    f"  Mean reward      : "
+                    f"{mean_reward:+.5f}"
+                )
+
+                print(
+                    f"  Mean steps valid : "
+                    f"{mean_steps:.3f}"
+                )
+
+                print()
+                print("  PPO")
+
+                print(
+                    f"    policy loss    : "
+                    f"{stats.policy_loss:+.6f}"
+                )
+
+                print(
+                    f"    value loss     : "
+                    f"{stats.value_loss:.6f}"
+                )
+
+                print(
+                    f"    entropy        : "
+                    f"{stats.entropy:.6f}"
+                )
+
+                print(
+                    f"    total loss     : "
+                    f"{stats.total_loss:+.6f}"
+                )
+
+                print(
+                    f"    approx KL      : "
+                    f"{stats.approx_kl:.6f}"
+                )
+
+                print(
+                    f"    clip fraction  : "
+                    f"{stats.clip_fraction:.6f}"
+                )
+
+                print(
+                    f"    grad norm      : "
+                    f"{stats.grad_norm:.6f}"
+                )
+
+                print(
+                    f"    samples        : "
+                    f"{stats.num_samples}"
+                )
+
+                window_success.clear()
+                window_steps.clear()
+                window_rewards.clear()
+
+        # ----------------------------------------------------
+        # FINAL EVALUATION
+        # ----------------------------------------------------
+
+        print()
+        print("=" * 78)
+        print("FINAL EVALUATION")
+        print("=" * 78)
+
+        (
+            train_rate_after,
+            train_steps_after,
+        ) = evaluate(
+            model,
+            train_graph_objects,
+        )
+
+        (
+            test_rate_after,
+            test_steps_after,
+        ) = evaluate(
+            model,
+            test_graph_objects,
+        )
+
+        print()
+        print("TRAIN GRAPHS")
+        print("-" * 78)
+
+        print(
+            f"Validity rate : "
+            f"{train_rate_before:.3f}"
+            f" -> "
+            f"{train_rate_after:.3f}"
+        )
+
+        print(
+            f"Mean steps    : "
+            f"{train_steps_before:.3f}"
+            f" -> "
+            f"{train_steps_after:.3f}"
+        )
+
+        print()
+        print("HELD-OUT GRAPHS")
+        print("-" * 78)
+
+        print(
+            f"Validity rate : "
+            f"{test_rate_before:.3f}"
+            f" -> "
+            f"{test_rate_after:.3f}"
+        )
+
+        print(
+            f"Mean steps    : "
+            f"{test_steps_before:.3f}"
+            f" -> "
+            f"{test_steps_after:.3f}"
+        )
+
+        print()
+        print("=" * 78)
+        print("INTERPRETATION")
+        print("=" * 78)
+
+        train_delta = (
+            train_rate_after
+            - train_rate_before
+        )
+
+        test_delta = (
+            test_rate_after
+            - test_rate_before
+        )
+
+        print(
+            f"Train validity change : "
+            f"{train_delta:+.3f}"
+        )
+
+        print(
+            f"Test validity change  : "
+            f"{test_delta:+.3f}"
+        )
+
+        print()
+
+        if (
+            train_rate_after > train_rate_before
+            and test_rate_after > test_rate_before
+        ):
+
+            print(
+                "RESULT: validity performance "
+                "improved on both training and "
+                "held-out graphs."
+            )
+
+        elif train_rate_after > train_rate_before:
+
+            print(
+                "RESULT: training performance "
+                "improved, but held-out "
+                "generalization did not improve."
+            )
+
+        else:
+
+            print(
+                "RESULT: no clear validity "
+                "improvement was observed."
+            )
+
+        print()
+        print(
+            "FULL OUTPUT SAVED TO:"
+        )
+
+        print(
+            OUTPUT_FILE
+        )
+
+    except Exception as exc:
+
+        print()
+        print("=" * 78)
+        print("EXPERIMENT FAILED")
+        print("=" * 78)
+
+        print(
+            f"{type(exc).__name__}: {exc}"
+        )
+
+        raise
+
+    finally:
+
+        sys.stdout = original_stdout
+        tee.close()
+
+
+# ============================================================
+# PYTEST ENTRY POINT
+# ============================================================
+
+def test_validity_policy_can_learn_from_real_graphs():
+
+    run_experiment()
+
+    assert OUTPUT_FILE.exists()
+
+    assert OUTPUT_FILE.stat().st_size > 0
+
+
+if __name__ == "__main__":
+    run_experiment()

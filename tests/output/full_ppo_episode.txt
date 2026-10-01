@@ -1,0 +1,1162 @@
+
+======================================================================
+FULL PPO TINY-GRAPH INTEGRATION TEST
+======================================================================
+
+======================================================================
+BUILDING TINY PPO TEST GRAPH
+======================================================================
+Nodes    : 4
+Edges    : 4
+Sessions : 2
+  edge    : ('v0', 'v1')
+  edge    : ('v1', 'v3')
+  edge    : ('v3', 'v2')
+  edge    : ('v2', 'v0')
+  session : ('v0', 'v3')
+  session : ('v1', 'v2')
+======================================================================
+
+PHASE 1: ROLLOUT
+----------------------------------------------------------------------
+
+============================================================
+EPISODE START
+============================================================
+Initial State
+  Valid             : False
+  SCB               : None
+  Sessions selected : 2
+  Cut edges         : 0
+  Separated         : 0
+  Phase             : validity
+============================================================
+
+Step 001
+  Phase             : validity
+  Policy            : ValidityPolicy
+  Action            : ADD_EDGE ('v0', 'v1')
+  Reward            : +0.000000
+  Valid             : False
+  SCB               : None
+  Cut size          : 1
+  Separated         : 0
+  Done              : False
+
+Step 002
+  Phase             : validity
+  Policy            : ValidityPolicy
+  Action            : ADD_EDGE ('v1', 'v3')
+  Reward            : +0.000000
+  Valid             : False
+  SCB               : None
+  Cut size          : 2
+  Separated         : 1
+  Done              : False
+
+Step 003
+  Phase             : validity
+  Policy            : ValidityPolicy
+  Action            : REMOVE_EDGE ('v1', 'v3')
+  Reward            : +0.000000
+  Valid             : False
+  SCB               : None
+  Cut size          : 1
+  Separated         : 0
+  Done              : False
+
+Step 004
+  Phase             : validity
+  Policy            : ValidityPolicy
+  Action            : ADD_EDGE ('v3', 'v2')
+  Reward            : +1.000000
+  Valid             : True
+  SCB               : 1.0
+  Cut size          : 2
+  Separated         : 2
+  Done              : False
+
+[CONTROLLER] VALIDITY → MINIMIZATION
+
+Step 005
+  Phase             : minimization
+  Policy            : MinimizationPolicy
+  Action            : REMOVE_EDGE ('v3', 'v2')
+  Reward            : +0.000000
+  Valid             : False
+  SCB               : None
+  Cut size          : 1
+  Separated         : 0
+  Done              : False
+
+[CONTROLLER] MINIMIZATION → VALIDITY
+
+Step 006
+  Phase             : validity
+  Policy            : ValidityPolicy
+  Action            : REMOVE_EDGE ('v0', 'v1')
+  Reward            : +0.000000
+  Valid             : False
+  SCB               : None
+  Cut size          : 0
+  Separated         : 0
+  Done              : False
+
+Step 007
+  Phase             : validity
+  Policy            : ValidityPolicy
+  Action            : ADD_EDGE ('v3', 'v2')
+  Reward            : +0.000000
+  Valid             : False
+  SCB               : None
+  Cut size          : 1
+  Separated         : 0
+  Done              : False
+
+Step 008
+  Phase             : validity
+  Policy            : ValidityPolicy
+  Action            : ADD_EDGE ('v2', 'v0')
+  Reward            : +0.000000
+  Valid             : False
+  SCB               : None
+  Cut size          : 2
+  Separated         : 1
+  Done              : False
+
+Step 009
+  Phase             : validity
+  Policy            : ValidityPolicy
+  Action            : ADD_EDGE ('v0', 'v1')
+  Reward            : +1.000000
+  Valid             : True
+  SCB               : 1.5
+  Cut size          : 3
+  Separated         : 2
+  Done              : False
+
+[CONTROLLER] VALIDITY → MINIMIZATION
+
+Step 010
+  Phase             : minimization
+  Policy            : MinimizationPolicy
+  Action            : REMOVE_SESSION ('v0', 'v3')
+  Reward            : -1.500000
+  Valid             : True
+  SCB               : 3.0
+  Cut size          : 3
+  Separated         : 1
+  Done              : False
+
+Step 011
+  Phase             : minimization
+  Policy            : MinimizationPolicy
+  Action            : REMOVE_SESSION ('v1', 'v2')
+  Reward            : +0.000000
+  Valid             : False
+  SCB               : None
+  Cut size          : 3
+  Separated         : 0
+  Done              : False
+
+[CONTROLLER] MINIMIZATION → VALIDITY
+
+Step 012
+  Phase             : validity
+  Policy            : ValidityPolicy
+  Action            : ADD_EDGE ('v1', 'v3')
+  Reward            : +0.000000
+  Valid             : False
+  SCB               : None
+  Cut size          : 4
+  Separated         : 0
+  Done              : False
+
+Step 013
+  Phase             : validity
+  Policy            : ValidityPolicy
+  Action            : REMOVE_EDGE ('v0', 'v1')
+  Reward            : +0.000000
+  Valid             : False
+  SCB               : None
+  Cut size          : 3
+  Separated         : 0
+  Done              : False
+
+Step 014
+  Phase             : validity
+  Policy            : ValidityPolicy
+  Action            : ADD_EDGE ('v0', 'v1')
+  Reward            : +0.000000
+  Valid             : False
+  SCB               : None
+  Cut size          : 4
+  Separated         : 0
+  Done              : False
+
+Step 015
+  Phase             : validity
+  Policy            : ValidityPolicy
+  Action            : REMOVE_EDGE ('v3', 'v2')
+  Reward            : +0.000000
+  Valid             : False
+  SCB               : None
+  Cut size          : 3
+  Separated         : 0
+  Done              : False
+
+Step 016
+  Phase             : validity
+  Policy            : ValidityPolicy
+  Action            : REMOVE_EDGE ('v1', 'v3')
+  Reward            : +0.000000
+  Valid             : False
+  SCB               : None
+  Cut size          : 2
+  Separated         : 0
+  Done              : False
+
+Step 017
+  Phase             : validity
+  Policy            : ValidityPolicy
+  Action            : REMOVE_EDGE ('v2', 'v0')
+  Reward            : +0.000000
+  Valid             : False
+  SCB               : None
+  Cut size          : 1
+  Separated         : 0
+  Done              : False
+
+Step 018
+  Phase             : validity
+  Policy            : ValidityPolicy
+  Action            : REMOVE_EDGE ('v0', 'v1')
+  Reward            : +0.000000
+  Valid             : False
+  SCB               : None
+  Cut size          : 0
+  Separated         : 0
+  Done              : False
+
+Step 019
+  Phase             : validity
+  Policy            : ValidityPolicy
+  Action            : ADD_EDGE ('v3', 'v2')
+  Reward            : +0.000000
+  Valid             : False
+  SCB               : None
+  Cut size          : 1
+  Separated         : 0
+  Done              : False
+
+Step 020
+  Phase             : validity
+  Policy            : ValidityPolicy
+  Action            : REMOVE_EDGE ('v3', 'v2')
+  Reward            : +0.000000
+  Valid             : False
+  SCB               : None
+  Cut size          : 0
+  Separated         : 0
+  Done              : False
+
+Step 021
+  Phase             : validity
+  Policy            : ValidityPolicy
+  Action            : ADD_EDGE ('v3', 'v2')
+  Reward            : +0.000000
+  Valid             : False
+  SCB               : None
+  Cut size          : 1
+  Separated         : 0
+  Done              : False
+
+Step 022
+  Phase             : validity
+  Policy            : ValidityPolicy
+  Action            : ADD_EDGE ('v0', 'v1')
+  Reward            : +0.000000
+  Valid             : False
+  SCB               : None
+  Cut size          : 2
+  Separated         : 0
+  Done              : False
+
+Step 023
+  Phase             : validity
+  Policy            : ValidityPolicy
+  Action            : REMOVE_EDGE ('v3', 'v2')
+  Reward            : +0.000000
+  Valid             : False
+  SCB               : None
+  Cut size          : 1
+  Separated         : 0
+  Done              : False
+
+Step 024
+  Phase             : validity
+  Policy            : ValidityPolicy
+  Action            : REMOVE_EDGE ('v0', 'v1')
+  Reward            : +0.000000
+  Valid             : False
+  SCB               : None
+  Cut size          : 0
+  Separated         : 0
+  Done              : False
+
+Step 025
+  Phase             : validity
+  Policy            : ValidityPolicy
+  Action            : ADD_EDGE ('v3', 'v2')
+  Reward            : +0.000000
+  Valid             : False
+  SCB               : None
+  Cut size          : 1
+  Separated         : 0
+  Done              : False
+
+Step 026
+  Phase             : validity
+  Policy            : ValidityPolicy
+  Action            : ADD_EDGE ('v2', 'v0')
+  Reward            : +0.000000
+  Valid             : False
+  SCB               : None
+  Cut size          : 2
+  Separated         : 0
+  Done              : False
+
+Step 027
+  Phase             : validity
+  Policy            : ValidityPolicy
+  Action            : ADD_EDGE ('v0', 'v1')
+  Reward            : +0.000000
+  Valid             : False
+  SCB               : None
+  Cut size          : 3
+  Separated         : 0
+  Done              : False
+
+Step 028
+  Phase             : validity
+  Policy            : ValidityPolicy
+  Action            : ADD_EDGE ('v1', 'v3')
+  Reward            : +0.000000
+  Valid             : False
+  SCB               : None
+  Cut size          : 4
+  Separated         : 0
+  Done              : False
+
+Step 029
+  Phase             : validity
+  Policy            : ValidityPolicy
+  Action            : REMOVE_EDGE ('v0', 'v1')
+  Reward            : +0.000000
+  Valid             : False
+  SCB               : None
+  Cut size          : 3
+  Separated         : 0
+  Done              : False
+
+Step 030
+  Phase             : validity
+  Policy            : ValidityPolicy
+  Action            : REMOVE_EDGE ('v2', 'v0')
+  Reward            : +0.000000
+  Valid             : False
+  SCB               : None
+  Cut size          : 2
+  Separated         : 0
+  Done              : False
+
+Step 031
+  Phase             : validity
+  Policy            : ValidityPolicy
+  Action            : REMOVE_EDGE ('v1', 'v3')
+  Reward            : +0.000000
+  Valid             : False
+  SCB               : None
+  Cut size          : 1
+  Separated         : 0
+  Done              : False
+
+Step 032
+  Phase             : validity
+  Policy            : ValidityPolicy
+  Action            : ADD_EDGE ('v1', 'v3')
+  Reward            : +0.000000
+  Valid             : False
+  SCB               : None
+  Cut size          : 2
+  Separated         : 0
+  Done              : False
+
+Step 033
+  Phase             : validity
+  Policy            : ValidityPolicy
+  Action            : ADD_EDGE ('v0', 'v1')
+  Reward            : +0.000000
+  Valid             : False
+  SCB               : None
+  Cut size          : 3
+  Separated         : 0
+  Done              : False
+
+Step 034
+  Phase             : validity
+  Policy            : ValidityPolicy
+  Action            : REMOVE_EDGE ('v3', 'v2')
+  Reward            : +0.000000
+  Valid             : False
+  SCB               : None
+  Cut size          : 2
+  Separated         : 0
+  Done              : False
+
+Step 035
+  Phase             : validity
+  Policy            : ValidityPolicy
+  Action            : ADD_EDGE ('v3', 'v2')
+  Reward            : +0.000000
+  Valid             : False
+  SCB               : None
+  Cut size          : 3
+  Separated         : 0
+  Done              : False
+
+Step 036
+  Phase             : validity
+  Policy            : ValidityPolicy
+  Action            : ADD_EDGE ('v2', 'v0')
+  Reward            : +0.000000
+  Valid             : False
+  SCB               : None
+  Cut size          : 4
+  Separated         : 0
+  Done              : False
+
+Step 037
+  Phase             : validity
+  Policy            : ValidityPolicy
+  Action            : REMOVE_EDGE ('v2', 'v0')
+  Reward            : +0.000000
+  Valid             : False
+  SCB               : None
+  Cut size          : 3
+  Separated         : 0
+  Done              : False
+
+Step 038
+  Phase             : validity
+  Policy            : ValidityPolicy
+  Action            : REMOVE_EDGE ('v0', 'v1')
+  Reward            : +0.000000
+  Valid             : False
+  SCB               : None
+  Cut size          : 2
+  Separated         : 0
+  Done              : False
+
+Step 039
+  Phase             : validity
+  Policy            : ValidityPolicy
+  Action            : REMOVE_EDGE ('v1', 'v3')
+  Reward            : +0.000000
+  Valid             : False
+  SCB               : None
+  Cut size          : 1
+  Separated         : 0
+  Done              : False
+
+Step 040
+  Phase             : validity
+  Policy            : ValidityPolicy
+  Action            : ADD_EDGE ('v0', 'v1')
+  Reward            : +0.000000
+  Valid             : False
+  SCB               : None
+  Cut size          : 2
+  Separated         : 0
+  Done              : False
+
+Step 041
+  Phase             : validity
+  Policy            : ValidityPolicy
+  Action            : ADD_EDGE ('v1', 'v3')
+  Reward            : +0.000000
+  Valid             : False
+  SCB               : None
+  Cut size          : 3
+  Separated         : 0
+  Done              : False
+
+Step 042
+  Phase             : validity
+  Policy            : ValidityPolicy
+  Action            : REMOVE_EDGE ('v1', 'v3')
+  Reward            : +0.000000
+  Valid             : False
+  SCB               : None
+  Cut size          : 2
+  Separated         : 0
+  Done              : False
+
+Step 043
+  Phase             : validity
+  Policy            : ValidityPolicy
+  Action            : REMOVE_EDGE ('v3', 'v2')
+  Reward            : +0.000000
+  Valid             : False
+  SCB               : None
+  Cut size          : 1
+  Separated         : 0
+  Done              : False
+
+Step 044
+  Phase             : validity
+  Policy            : ValidityPolicy
+  Action            : ADD_EDGE ('v1', 'v3')
+  Reward            : +0.000000
+  Valid             : False
+  SCB               : None
+  Cut size          : 2
+  Separated         : 0
+  Done              : False
+
+Step 045
+  Phase             : validity
+  Policy            : ValidityPolicy
+  Action            : ADD_EDGE ('v2', 'v0')
+  Reward            : +0.000000
+  Valid             : False
+  SCB               : None
+  Cut size          : 3
+  Separated         : 0
+  Done              : False
+
+Step 046
+  Phase             : validity
+  Policy            : ValidityPolicy
+  Action            : REMOVE_EDGE ('v2', 'v0')
+  Reward            : +0.000000
+  Valid             : False
+  SCB               : None
+  Cut size          : 2
+  Separated         : 0
+  Done              : False
+
+Step 047
+  Phase             : validity
+  Policy            : ValidityPolicy
+  Action            : ADD_EDGE ('v3', 'v2')
+  Reward            : +0.000000
+  Valid             : False
+  SCB               : None
+  Cut size          : 3
+  Separated         : 0
+  Done              : False
+
+Step 048
+  Phase             : validity
+  Policy            : ValidityPolicy
+  Action            : REMOVE_EDGE ('v3', 'v2')
+  Reward            : +0.000000
+  Valid             : False
+  SCB               : None
+  Cut size          : 2
+  Separated         : 0
+  Done              : False
+
+Step 049
+  Phase             : validity
+  Policy            : ValidityPolicy
+  Action            : REMOVE_EDGE ('v1', 'v3')
+  Reward            : +0.000000
+  Valid             : False
+  SCB               : None
+  Cut size          : 1
+  Separated         : 0
+  Done              : False
+
+Step 050
+  Phase             : validity
+  Policy            : ValidityPolicy
+  Action            : ADD_EDGE ('v3', 'v2')
+  Reward            : +0.000000
+  Valid             : False
+  SCB               : None
+  Cut size          : 2
+  Separated         : 0
+  Done              : False
+
+Step 051
+  Phase             : validity
+  Policy            : ValidityPolicy
+  Action            : ADD_EDGE ('v1', 'v3')
+  Reward            : +0.000000
+  Valid             : False
+  SCB               : None
+  Cut size          : 3
+  Separated         : 0
+  Done              : False
+
+Step 052
+  Phase             : validity
+  Policy            : ValidityPolicy
+  Action            : REMOVE_EDGE ('v0', 'v1')
+  Reward            : +0.000000
+  Valid             : False
+  SCB               : None
+  Cut size          : 2
+  Separated         : 0
+  Done              : False
+
+Step 053
+  Phase             : validity
+  Policy            : ValidityPolicy
+  Action            : REMOVE_EDGE ('v3', 'v2')
+  Reward            : +0.000000
+  Valid             : False
+  SCB               : None
+  Cut size          : 1
+  Separated         : 0
+  Done              : False
+
+Step 054
+  Phase             : validity
+  Policy            : ValidityPolicy
+  Action            : ADD_EDGE ('v3', 'v2')
+  Reward            : +0.000000
+  Valid             : False
+  SCB               : None
+  Cut size          : 2
+  Separated         : 0
+  Done              : False
+
+Step 055
+  Phase             : validity
+  Policy            : ValidityPolicy
+  Action            : REMOVE_EDGE ('v3', 'v2')
+  Reward            : +0.000000
+  Valid             : False
+  SCB               : None
+  Cut size          : 1
+  Separated         : 0
+  Done              : False
+
+Step 056
+  Phase             : validity
+  Policy            : ValidityPolicy
+  Action            : ADD_EDGE ('v3', 'v2')
+  Reward            : +0.000000
+  Valid             : False
+  SCB               : None
+  Cut size          : 2
+  Separated         : 0
+  Done              : False
+
+Step 057
+  Phase             : validity
+  Policy            : ValidityPolicy
+  Action            : REMOVE_EDGE ('v1', 'v3')
+  Reward            : +0.000000
+  Valid             : False
+  SCB               : None
+  Cut size          : 1
+  Separated         : 0
+  Done              : False
+
+Step 058
+  Phase             : validity
+  Policy            : ValidityPolicy
+  Action            : ADD_EDGE ('v1', 'v3')
+  Reward            : +0.000000
+  Valid             : False
+  SCB               : None
+  Cut size          : 2
+  Separated         : 0
+  Done              : False
+
+Step 059
+  Phase             : validity
+  Policy            : ValidityPolicy
+  Action            : ADD_EDGE ('v2', 'v0')
+  Reward            : +0.000000
+  Valid             : False
+  SCB               : None
+  Cut size          : 3
+  Separated         : 0
+  Done              : False
+
+Step 060
+  Phase             : validity
+  Policy            : ValidityPolicy
+  Action            : REMOVE_EDGE ('v3', 'v2')
+  Reward            : +0.000000
+  Valid             : False
+  SCB               : None
+  Cut size          : 2
+  Separated         : 0
+  Done              : False
+
+Step 061
+  Phase             : validity
+  Policy            : ValidityPolicy
+  Action            : REMOVE_EDGE ('v1', 'v3')
+  Reward            : +0.000000
+  Valid             : False
+  SCB               : None
+  Cut size          : 1
+  Separated         : 0
+  Done              : False
+
+Step 062
+  Phase             : validity
+  Policy            : ValidityPolicy
+  Action            : ADD_EDGE ('v0', 'v1')
+  Reward            : +0.000000
+  Valid             : False
+  SCB               : None
+  Cut size          : 2
+  Separated         : 0
+  Done              : False
+
+Step 063
+  Phase             : validity
+  Policy            : ValidityPolicy
+  Action            : REMOVE_EDGE ('v0', 'v1')
+  Reward            : +0.000000
+  Valid             : False
+  SCB               : None
+  Cut size          : 1
+  Separated         : 0
+  Done              : False
+
+Step 064
+  Phase             : validity
+  Policy            : ValidityPolicy
+  Action            : REMOVE_EDGE ('v2', 'v0')
+  Reward            : +0.000000
+  Valid             : False
+  SCB               : None
+  Cut size          : 0
+  Separated         : 0
+  Done              : False
+
+Step 065
+  Phase             : validity
+  Policy            : ValidityPolicy
+  Action            : ADD_EDGE ('v3', 'v2')
+  Reward            : +0.000000
+  Valid             : False
+  SCB               : None
+  Cut size          : 1
+  Separated         : 0
+  Done              : False
+
+Step 066
+  Phase             : validity
+  Policy            : ValidityPolicy
+  Action            : ADD_EDGE ('v2', 'v0')
+  Reward            : +0.000000
+  Valid             : False
+  SCB               : None
+  Cut size          : 2
+  Separated         : 0
+  Done              : False
+
+Step 067
+  Phase             : validity
+  Policy            : ValidityPolicy
+  Action            : REMOVE_EDGE ('v3', 'v2')
+  Reward            : +0.000000
+  Valid             : False
+  SCB               : None
+  Cut size          : 1
+  Separated         : 0
+  Done              : False
+
+Step 068
+  Phase             : validity
+  Policy            : ValidityPolicy
+  Action            : REMOVE_EDGE ('v2', 'v0')
+  Reward            : +0.000000
+  Valid             : False
+  SCB               : None
+  Cut size          : 0
+  Separated         : 0
+  Done              : False
+
+Step 069
+  Phase             : validity
+  Policy            : ValidityPolicy
+  Action            : ADD_EDGE ('v0', 'v1')
+  Reward            : +0.000000
+  Valid             : False
+  SCB               : None
+  Cut size          : 1
+  Separated         : 0
+  Done              : False
+
+Step 070
+  Phase             : validity
+  Policy            : ValidityPolicy
+  Action            : REMOVE_EDGE ('v0', 'v1')
+  Reward            : +0.000000
+  Valid             : False
+  SCB               : None
+  Cut size          : 0
+  Separated         : 0
+  Done              : False
+
+Step 071
+  Phase             : validity
+  Policy            : ValidityPolicy
+  Action            : ADD_EDGE ('v1', 'v3')
+  Reward            : +0.000000
+  Valid             : False
+  SCB               : None
+  Cut size          : 1
+  Separated         : 0
+  Done              : False
+
+Step 072
+  Phase             : validity
+  Policy            : ValidityPolicy
+  Action            : ADD_EDGE ('v3', 'v2')
+  Reward            : +0.000000
+  Valid             : False
+  SCB               : None
+  Cut size          : 2
+  Separated         : 0
+  Done              : False
+
+Step 073
+  Phase             : validity
+  Policy            : ValidityPolicy
+  Action            : ADD_EDGE ('v0', 'v1')
+  Reward            : +0.000000
+  Valid             : False
+  SCB               : None
+  Cut size          : 3
+  Separated         : 0
+  Done              : False
+
+Step 074
+  Phase             : validity
+  Policy            : ValidityPolicy
+  Action            : REMOVE_EDGE ('v3', 'v2')
+  Reward            : +0.000000
+  Valid             : False
+  SCB               : None
+  Cut size          : 2
+  Separated         : 0
+  Done              : False
+
+Step 075
+  Phase             : validity
+  Policy            : ValidityPolicy
+  Action            : REMOVE_EDGE ('v1', 'v3')
+  Reward            : +0.000000
+  Valid             : False
+  SCB               : None
+  Cut size          : 1
+  Separated         : 0
+  Done              : False
+
+Step 076
+  Phase             : validity
+  Policy            : ValidityPolicy
+  Action            : ADD_EDGE ('v2', 'v0')
+  Reward            : +0.000000
+  Valid             : False
+  SCB               : None
+  Cut size          : 2
+  Separated         : 0
+  Done              : False
+
+Step 077
+  Phase             : validity
+  Policy            : ValidityPolicy
+  Action            : REMOVE_EDGE ('v0', 'v1')
+  Reward            : +0.000000
+  Valid             : False
+  SCB               : None
+  Cut size          : 1
+  Separated         : 0
+  Done              : False
+
+Step 078
+  Phase             : validity
+  Policy            : ValidityPolicy
+  Action            : ADD_EDGE ('v3', 'v2')
+  Reward            : +0.000000
+  Valid             : False
+  SCB               : None
+  Cut size          : 2
+  Separated         : 0
+  Done              : False
+
+Step 079
+  Phase             : validity
+  Policy            : ValidityPolicy
+  Action            : ADD_EDGE ('v1', 'v3')
+  Reward            : +0.000000
+  Valid             : False
+  SCB               : None
+  Cut size          : 3
+  Separated         : 0
+  Done              : False
+
+Step 080
+  Phase             : validity
+  Policy            : ValidityPolicy
+  Action            : REMOVE_EDGE ('v3', 'v2')
+  Reward            : +0.000000
+  Valid             : False
+  SCB               : None
+  Cut size          : 2
+  Separated         : 0
+  Done              : False
+
+Step 081
+  Phase             : validity
+  Policy            : ValidityPolicy
+  Action            : ADD_EDGE ('v3', 'v2')
+  Reward            : +0.000000
+  Valid             : False
+  SCB               : None
+  Cut size          : 3
+  Separated         : 0
+  Done              : False
+
+Step 082
+  Phase             : validity
+  Policy            : ValidityPolicy
+  Action            : REMOVE_EDGE ('v1', 'v3')
+  Reward            : +0.000000
+  Valid             : False
+  SCB               : None
+  Cut size          : 2
+  Separated         : 0
+  Done              : False
+
+Step 083
+  Phase             : validity
+  Policy            : ValidityPolicy
+  Action            : ADD_EDGE ('v0', 'v1')
+  Reward            : +0.000000
+  Valid             : False
+  SCB               : None
+  Cut size          : 3
+  Separated         : 0
+  Done              : False
+
+Step 084
+  Phase             : validity
+  Policy            : ValidityPolicy
+  Action            : REMOVE_EDGE ('v3', 'v2')
+  Reward            : +0.000000
+  Valid             : False
+  SCB               : None
+  Cut size          : 2
+  Separated         : 0
+  Done              : False
+
+Step 085
+  Phase             : validity
+  Policy            : ValidityPolicy
+  Action            : ADD_EDGE ('v1', 'v3')
+  Reward            : +0.000000
+  Valid             : False
+  SCB               : None
+  Cut size          : 3
+  Separated         : 0
+  Done              : False
+
+Step 086
+  Phase             : validity
+  Policy            : ValidityPolicy
+  Action            : REMOVE_EDGE ('v1', 'v3')
+  Reward            : +0.000000
+  Valid             : False
+  SCB               : None
+  Cut size          : 2
+  Separated         : 0
+  Done              : False
+
+Step 087
+  Phase             : validity
+  Policy            : ValidityPolicy
+  Action            : ADD_EDGE ('v1', 'v3')
+  Reward            : +0.000000
+  Valid             : False
+  SCB               : None
+  Cut size          : 3
+  Separated         : 0
+  Done              : False
+
+Step 088
+  Phase             : validity
+  Policy            : ValidityPolicy
+  Action            : REMOVE_EDGE ('v2', 'v0')
+  Reward            : +0.000000
+  Valid             : False
+  SCB               : None
+  Cut size          : 2
+  Separated         : 0
+  Done              : False
+
+Step 089
+  Phase             : validity
+  Policy            : ValidityPolicy
+  Action            : REMOVE_EDGE ('v0', 'v1')
+  Reward            : +0.000000
+  Valid             : False
+  SCB               : None
+  Cut size          : 1
+  Separated         : 0
+  Done              : False
+
+Step 090
+  Phase             : validity
+  Policy            : ValidityPolicy
+  Action            : ADD_EDGE ('v0', 'v1')
+  Reward            : +0.000000
+  Valid             : False
+  SCB               : None
+  Cut size          : 2
+  Separated         : 0
+  Done              : False
+
+Step 091
+  Phase             : validity
+  Policy            : ValidityPolicy
+  Action            : ADD_EDGE ('v3', 'v2')
+  Reward            : +0.000000
+  Valid             : False
+  SCB               : None
+  Cut size          : 3
+  Separated         : 0
+  Done              : False
+
+Step 092
+  Phase             : validity
+  Policy            : ValidityPolicy
+  Action            : REMOVE_EDGE ('v0', 'v1')
+  Reward            : +0.000000
+  Valid             : False
+  SCB               : None
+  Cut size          : 2
+  Separated         : 0
+  Done              : False
+
+Step 093
+  Phase             : validity
+  Policy            : ValidityPolicy
+  Action            : ADD_EDGE ('v0', 'v1')
+  Reward            : +0.000000
+  Valid             : False
+  SCB               : None
+  Cut size          : 3
+  Separated         : 0
+  Done              : False
+
+Step 094
+  Phase             : validity
+  Policy            : ValidityPolicy
+  Action            : ADD_EDGE ('v2', 'v0')
+  Reward            : +0.000000
+  Valid             : False
+  SCB               : None
+  Cut size          : 4
+  Separated         : 0
+  Done              : False
+
+Step 095
+  Phase             : validity
+  Policy            : ValidityPolicy
+  Action            : REMOVE_EDGE ('v0', 'v1')
+  Reward            : +0.000000
+  Valid             : False
+  SCB               : None
+  Cut size          : 3
+  Separated         : 0
+  Done              : False
+
+Step 096
+  Phase             : validity
+  Policy            : ValidityPolicy
+  Action            : REMOVE_EDGE ('v1', 'v3')
+  Reward            : +0.000000
+  Valid             : False
+  SCB               : None
+  Cut size          : 2
+  Separated         : 0
+  Done              : False
+
+Step 097
+  Phase             : validity
+  Policy            : ValidityPolicy
+  Action            : ADD_EDGE ('v1', 'v3')
+  Reward            : +0.000000
+  Valid             : False
+  SCB               : None
+  Cut size          : 3
+  Separated         : 0
+  Done              : False
+
+Step 098
+  Phase             : validity
+  Policy            : ValidityPolicy
+  Action            : REMOVE_EDGE ('v3', 'v2')
+  Reward            : +0.000000
+  Valid             : False
+  SCB               : None
+  Cut size          : 2
+  Separated         : 0
+  Done              : False
+
+Step 099
+  Phase             : validity
+  Policy            : ValidityPolicy
+  Action            : REMOVE_EDGE ('v1', 'v3')
+  Reward            : +0.000000
+  Valid             : False
+  SCB               : None
+  Cut size          : 1
+  Separated         : 0
+  Done              : False
+
+Step 100
+  Phase             : validity
+  Policy            : ValidityPolicy
+  Action            : ADD_EDGE ('v1', 'v3')
+  Reward            : +0.000000
+  Valid             : False
+  SCB               : None
+  Cut size          : 2
+  Separated         : 0
+  Done              : False
+
+============================================================
+EPISODE COMPLETE
+============================================================
+  Steps             : 100
+  Final phase       : validity
+  Final valid       : False
+  Final SCB         : None
+  Best SCB          : 1.0
+  Total reward      : 0.500000
+============================================================
+
+----------------------------------------------------------------------
+EPISODE SUMMARY
+----------------------------------------------------------------------
+Initial valid : False
+Final valid   : False
+Initial SCB   : None
+Final SCB     : None
+Cut size      : 2
+Selected sessions : 0

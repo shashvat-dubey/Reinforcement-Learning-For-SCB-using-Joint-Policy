@@ -1,0 +1,389 @@
+
+==============================================================================
+SCB VALIDITY POLICY PPO LEARNING EXPERIMENT
+==============================================================================
+
+CONFIGURATION
+------------------------------------------------------------------------------
+Dataset              : data/raw/labelled_dataset.pkl
+Maximum nodes        : 12
+Maximum sessions     : 6
+Training graphs      : 20
+Held-out test graphs : 10
+Training episodes    : 2000
+Max steps / episode  : 30
+Learning rate        : 0.0003
+PPO epochs           : 4
+
+TRAIN GRAPHS
+------------------------------------------------------------------------------
+index= 946 nodes= 6 edges=  9 sessions= 3
+index= 892 nodes=12 edges= 50 sessions= 3
+index= 977 nodes= 6 edges= 12 sessions= 3
+index= 722 nodes= 9 edges= 36 sessions= 5
+index= 528 nodes= 6 edges= 11 sessions= 3
+index= 978 nodes= 9 edges= 15 sessions= 4
+index= 930 nodes= 7 edges= 19 sessions= 6
+index= 450 nodes= 8 edges= 15 sessions= 5
+index= 127 nodes= 6 edges=  8 sessions= 2
+index= 839 nodes= 8 edges= 12 sessions= 4
+index= 354 nodes=11 edges= 38 sessions= 5
+index= 697 nodes= 9 edges= 18 sessions= 4
+index= 889 nodes=12 edges= 21 sessions= 4
+index= 662 nodes= 8 edges= 22 sessions= 4
+index=  87 nodes= 9 edges= 36 sessions= 4
+index= 470 nodes= 6 edges=  8 sessions= 3
+index= 378 nodes= 5 edges=  7 sessions= 3
+index= 552 nodes= 5 edges=  7 sessions= 2
+index= 815 nodes= 5 edges=  7 sessions= 4
+index= 896 nodes=11 edges= 34 sessions= 5
+
+HELD-OUT TEST GRAPHS
+------------------------------------------------------------------------------
+index= 768 nodes= 7 edges= 12 sessions= 5
+index= 190 nodes= 7 edges= 18 sessions= 5
+index= 925 nodes= 7 edges=  9 sessions= 6
+index= 385 nodes= 7 edges= 10 sessions= 3
+index= 592 nodes= 7 edges= 12 sessions= 5
+index= 801 nodes= 8 edges= 20 sessions= 6
+index= 213 nodes= 9 edges= 34 sessions= 2
+index= 725 nodes= 7 edges= 16 sessions= 5
+index= 569 nodes= 6 edges= 15 sessions= 3
+index= 567 nodes= 9 edges= 30 sessions= 3
+
+==============================================================================
+BASELINE EVALUATION
+==============================================================================
+Train validity rate : 0.000
+Train mean steps    : inf
+Test validity rate  : 0.000
+Test mean steps     : inf
+
+==============================================================================
+PPO TRAINING
+==============================================================================
+
+[EPISODES 1-100]
+  Rollout validity : 0.480
+  Mean reward      : +1.14000
+  Mean steps valid : 14.042
+
+  PPO
+    policy loss    : +0.004752
+    value loss     : 0.974888
+    entropy        : 2.290218
+    total loss     : +0.469294
+    approx KL      : 0.000210
+    clip fraction  : 0.000000
+    grad norm      : 5.664425
+    samples        : 30
+
+[EPISODES 101-200]
+  Rollout validity : 0.710
+  Mean reward      : +3.19000
+  Mean steps valid : 10.775
+
+  PPO
+    policy loss    : -0.003064
+    value loss     : 4.585920
+    entropy        : 1.394987
+    total loss     : +2.275946
+    approx KL      : 0.000097
+    clip fraction  : 0.000000
+    grad norm      : 20.641312
+    samples        : 30
+
+[EPISODES 201-300]
+  Rollout validity : 0.750
+  Mean reward      : +4.32000
+  Mean steps valid : 11.200
+
+  PPO
+    policy loss    : -0.006624
+    value loss     : 0.152587
+    entropy        : 1.769773
+    total loss     : +0.051972
+    approx KL      : 0.001368
+    clip fraction  : 0.008333
+    grad norm      : 7.015427
+    samples        : 30
+
+[EPISODES 301-400]
+  Rollout validity : 0.750
+  Mean reward      : +5.03000
+  Mean steps valid : 10.133
+
+  PPO
+    policy loss    : -0.000173
+    value loss     : 0.033088
+    entropy        : 2.563632
+    total loss     : -0.009266
+    approx KL      : 0.000038
+    clip fraction  : 0.000000
+    grad norm      : 2.400562
+    samples        : 30
+
+[EPISODES 401-500]
+  Rollout validity : 0.790
+  Mean reward      : +5.59000
+  Mean steps valid : 10.278
+
+  PPO
+    policy loss    : -0.001205
+    value loss     : 0.162839
+    entropy        : 0.618171
+    total loss     : +0.074033
+    approx KL      : 0.000031
+    clip fraction  : 0.000000
+    grad norm      : 9.139724
+    samples        : 30
+
+[EPISODES 501-600]
+  Rollout validity : 0.780
+  Mean reward      : +5.21000
+  Mean steps valid : 10.731
+
+  PPO
+    policy loss    : -0.009320
+    value loss     : 0.086955
+    entropy        : 3.048775
+    total loss     : +0.003669
+    approx KL      : 0.000724
+    clip fraction  : 0.000000
+    grad norm      : 12.320676
+    samples        : 30
+
+[EPISODES 601-700]
+  Rollout validity : 0.660
+  Mean reward      : +5.19000
+  Mean steps valid : 10.364
+
+  PPO
+    policy loss    : -0.006273
+    value loss     : 0.015076
+    entropy        : 1.908309
+    total loss     : -0.017818
+    approx KL      : 0.000953
+    clip fraction  : 0.008333
+    grad norm      : 4.217402
+    samples        : 30
+
+[EPISODES 701-800]
+  Rollout validity : 0.740
+  Mean reward      : +5.24000
+  Mean steps valid : 11.865
+
+  PPO
+    policy loss    : -0.002317
+    value loss     : 0.935554
+    entropy        : 1.069220
+    total loss     : +0.454768
+    approx KL      : 0.000372
+    clip fraction  : 0.000000
+    grad norm      : 66.236962
+    samples        : 30
+
+[EPISODES 801-900]
+  Rollout validity : 0.830
+  Mean reward      : +6.27000
+  Mean steps valid : 12.000
+
+  PPO
+    policy loss    : +0.000404
+    value loss     : 0.081803
+    entropy        : 0.474876
+    total loss     : +0.036556
+    approx KL      : 0.000207
+    clip fraction  : 0.000000
+    grad norm      : 9.158379
+    samples        : 30
+
+[EPISODES 901-1000]
+  Rollout validity : 0.920
+  Mean reward      : +6.18000
+  Mean steps valid : 12.087
+
+  PPO
+    policy loss    : -0.002428
+    value loss     : 0.430006
+    entropy        : 0.976906
+    total loss     : +0.202806
+    approx KL      : 0.000128
+    clip fraction  : 0.000000
+    grad norm      : 41.899381
+    samples        : 30
+
+[EPISODES 1001-1100]
+  Rollout validity : 0.850
+  Mean reward      : +5.93000
+  Mean steps valid : 11.835
+
+  PPO
+    policy loss    : -0.001963
+    value loss     : 1.143044
+    entropy        : 1.428611
+    total loss     : +0.555273
+    approx KL      : 0.000391
+    clip fraction  : 0.000000
+    grad norm      : 84.978536
+    samples        : 30
+
+[EPISODES 1101-1200]
+  Rollout validity : 0.920
+  Mean reward      : +7.06000
+  Mean steps valid : 10.043
+
+  PPO
+    policy loss    : -0.015789
+    value loss     : 0.060423
+    entropy        : 1.983297
+    total loss     : -0.005411
+    approx KL      : 0.001500
+    clip fraction  : 0.000000
+    grad norm      : 11.188942
+    samples        : 30
+
+[EPISODES 1201-1300]
+  Rollout validity : 0.900
+  Mean reward      : +7.36000
+  Mean steps valid : 9.622
+
+  PPO
+    policy loss    : +0.006587
+    value loss     : 0.298756
+    entropy        : 0.824682
+    total loss     : +0.147718
+    approx KL      : 0.008406
+    clip fraction  : 0.041667
+    grad norm      : 57.110943
+    samples        : 30
+
+[EPISODES 1301-1400]
+  Rollout validity : 0.810
+  Mean reward      : +6.31000
+  Mean steps valid : 9.926
+
+  PPO
+    policy loss    : -0.005673
+    value loss     : 0.019790
+    entropy        : 0.211868
+    total loss     : +0.002103
+    approx KL      : 0.001806
+    clip fraction  : 0.033333
+    grad norm      : 3.055071
+    samples        : 30
+
+[EPISODES 1401-1500]
+  Rollout validity : 0.850
+  Mean reward      : +7.05000
+  Mean steps valid : 9.129
+
+  PPO
+    policy loss    : -0.003463
+    value loss     : 0.115088
+    entropy        : 1.037301
+    total loss     : +0.043708
+    approx KL      : 0.001298
+    clip fraction  : 0.016667
+    grad norm      : 10.365727
+    samples        : 30
+
+[EPISODES 1501-1600]
+  Rollout validity : 0.910
+  Mean reward      : +7.54000
+  Mean steps valid : 9.835
+
+  PPO
+    policy loss    : +0.001593
+    value loss     : 0.334125
+    entropy        : 0.745194
+    total loss     : +0.161204
+    approx KL      : 0.000245
+    clip fraction  : 0.000000
+    grad norm      : 20.164767
+    samples        : 30
+
+[EPISODES 1601-1700]
+  Rollout validity : 0.990
+  Mean reward      : +8.62000
+  Mean steps valid : 9.990
+
+  PPO
+    policy loss    : -0.000790
+    value loss     : 0.118372
+    entropy        : 0.388417
+    total loss     : +0.054512
+    approx KL      : 0.000854
+    clip fraction  : 0.008333
+    grad norm      : 10.424595
+    samples        : 30
+
+[EPISODES 1701-1800]
+  Rollout validity : 0.890
+  Mean reward      : +7.90000
+  Mean steps valid : 8.843
+
+  PPO
+    policy loss    : -0.007852
+    value loss     : 0.054401
+    entropy        : 0.286676
+    total loss     : +0.016482
+    approx KL      : 0.000330
+    clip fraction  : 0.000000
+    grad norm      : 7.167460
+    samples        : 30
+
+[EPISODES 1801-1900]
+  Rollout validity : 0.990
+  Mean reward      : +7.57000
+  Mean steps valid : 10.212
+
+  PPO
+    policy loss    : -0.002804
+    value loss     : 0.479682
+    entropy        : 1.418392
+    total loss     : +0.222853
+    approx KL      : 0.002982
+    clip fraction  : 0.025000
+    grad norm      : 51.699114
+    samples        : 30
+
+[EPISODES 1901-2000]
+  Rollout validity : 0.960
+  Mean reward      : +7.69000
+  Mean steps valid : 10.062
+
+  PPO
+    policy loss    : -0.008261
+    value loss     : 0.031223
+    entropy        : 0.469496
+    total loss     : +0.002656
+    approx KL      : 0.001353
+    clip fraction  : 0.025000
+    grad norm      : 2.238385
+    samples        : 30
+
+==============================================================================
+FINAL EVALUATION
+==============================================================================
+
+TRAIN GRAPHS
+------------------------------------------------------------------------------
+Validity rate : 0.000 -> 0.940
+Mean steps    : inf -> 7.809
+
+HELD-OUT GRAPHS
+------------------------------------------------------------------------------
+Validity rate : 0.000 -> 1.000
+Mean steps    : inf -> 12.340
+
+==============================================================================
+INTERPRETATION
+==============================================================================
+Train validity change : +0.940
+Test validity change  : +1.000
+
+RESULT: validity performance improved on both training and held-out graphs.
+
+FULL OUTPUT SAVED TO:
+tests/output/validity_learning.txt
